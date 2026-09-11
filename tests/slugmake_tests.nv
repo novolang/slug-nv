@@ -1,0 +1,243 @@
+// slugmake_tests.nv — the slug, and the notes saying what it cost.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: slug-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// THE VECTORS ARE `python-slugify`'s test suite and the `slug` crate's,
+// with GitHub's heading-anchor corpus behind `github_policy`. Where the
+// two references disagree, the case says which one this package
+// follows.
+//
+// THE ASSERTION THIS SUITE EXISTS FOR, above everything else: THE SLUG
+// IS NEVER EMPTY. Every reference implementation answers `""` for an
+// input it could not slug, and a route table then serves the index
+// page for the post. The fallback and the note are the whole point,
+// and the emoji case below is the one that proves it.
+
+use std.test
+use std.list
+use std.str
+use slugpolicy
+use slugmake
+use slugtrans
+use udata
+
+fn url() -> slugpolicy.SlugPolicy
+    slugpolicy.url_policy()
+
+fn gh() -> slugpolicy.SlugPolicy
+    slugpolicy.github_policy()
+
+@test
+fn test_the_ordinary_case_is_clean_and_carries_no_notes() [io]
+    test.case("a plain English title")
+    let o = slugmake.slugify("Hello, World!", url())
+    test.assert(o.slug == "hello-world")
+    test.assert(slugmake.is_clean(o))
+    test.assert(list.len(o.notes) == 0)
+
+    test.case("runs of punctuation collapse to one separator")
+    test.assert(slugmake.slugify("a -- b", url()).slug == "a-b")
+
+    test.case("leading and trailing separators are trimmed")
+    test.assert(slugmake.slugify("  spaced  ", url()).slug == "spaced")
+
+    test.case("digits survive")
+    test.assert(slugmake.slugify("Novo 0.8.9 released", url()).slug == "novo-0-8-9-released")
+
+@test
+fn test_the_slug_is_never_empty_and_the_note_says_why() [io]
+    test.case("AN ALL-EMOJI TITLE — the case every reference implementation answers \"\" for")
+    let o = slugmake.slugify("🎉🎉🎉", url())
+    test.assert(o.slug != "")
+    test.assert(o.slug == url().empty_fallback)
+
+    test.case("and the note is there, so a site owner can be told")
+    var saw_empty = false
+    for n in o.notes
+        match n
+            SlugNoteEmptyInput =>
+                saw_empty = true
+            _                  =>
+                pass
+    test.assert(saw_empty)
+
+    test.case("needs_attention is true for exactly this and for a dropped run")
+    test.assert(slugmake.needs_attention(o))
+
+    test.case("an empty title is the same answer, not a different one")
+    test.assert(slugmake.slugify("", url()).slug == url().empty_fallback)
+
+    test.case("a title of nothing but punctuation, likewise")
+    test.assert(slugmake.slugify("...---...", url()).slug == url().empty_fallback)
+
+@test
+fn test_a_dropped_run_is_reported_because_it_looks_like_success() [io]
+    // A Japanese title with an ASCII word in it. The compiled table
+    // covers no Kana, so what survives is the ASCII — a slug that is
+    // not empty, routes, and is useless.
+    let o = slugmake.slugify("日本語 Novo 入門", url())
+
+    test.case("the slug is what survived, and it is not the title")
+    test.assert(o.slug == "novo")
+
+    test.case("AND THE COUNT OF WHAT WAS DROPPED IS IN THE NOTES")
+    test.assert(slugmake.dropped_count(o) == 6)
+
+    test.case("so needs_attention is true even though the slug looks fine")
+    test.assert(slugmake.needs_attention(o))
+    test.assert(not slugmake.is_clean(o))
+
+@test
+fn test_transliteration_is_reported_but_is_not_a_problem() [io]
+    test.case("Danish letters come through the compiled table")
+    let o = slugmake.slugify("Æblegrød på Sjælland", url())
+    test.assert(o.slug == "aeblegroed-paa-sjaelland")
+
+    test.case("the note says how many characters left their script")
+    var count = 0
+    for n in o.notes
+        match n
+            SlugNoteTransliterated(c) =>
+                count = c
+            _                         =>
+                pass
+    test.assert(count > 0)
+
+    test.case("but nothing was dropped, so it needs no attention")
+    test.assert(not slugmake.needs_attention(o))
+
+    test.case("German sharp s is two letters, which is why the table answers a Str")
+    test.assert(slugmake.slugify("Straße", url()).slug == "strasse")
+
+    test.case("Greek and Cyrillic are in the compiled tier too")
+    test.assert(slugmake.slugify("Καλημέρα", url()).slug != url().empty_fallback)
+    test.assert(slugmake.slugify("Привет", url()).slug != url().empty_fallback)
+
+@test
+fn test_several_things_happen_at_once_which_is_why_notes_are_a_list() [io]
+    // Cyrillic, longer than the limit: transliterated AND truncated.
+    let p = slugpolicy.with_max_len(url(), 12)
+    let o = slugmake.slugify("Первая запись о путешествии", p)
+
+    test.case("two notes, not one")
+    test.assert(list.len(o.notes) >= 2)
+
+    test.case("the truncation note carries what it would have been")
+    var full = ""
+    for n in o.notes
+        match n
+            SlugNoteTruncated(f) =>
+                full = f
+            _                    =>
+                pass
+    test.assert(str.len(full) > str.len(o.slug))
+
+@test
+fn test_truncation_cuts_at_a_word_boundary_by_default() [io]
+    let p = slugpolicy.with_max_len(url(), 11)
+
+    test.case("the cut lands on a separator, so no half word survives")
+    let o = slugmake.slugify("alpha beta gamma", p)
+    test.assert(o.slug == "alpha-beta")
+
+    test.case("and the trailing separator does not survive the cut")
+    test.assert(str.index(o.slug, "beta-") == None)
+
+    test.case("truncate_at is the rule on its own, for a slug a caller built")
+    test.assert(slugmake.truncate_at("alpha-beta-gamma", 11, SlugTruncateWord, "-")
+                == "alpha-beta")
+
+    test.case("cluster truncation cuts at the limit exactly")
+    test.assert(slugmake.truncate_at("alpha-beta-gamma", 11, SlugTruncateCluster, "-")
+                == "alpha-beta-")
+
+    test.case("a limit of zero is no limit")
+    test.assert(slugmake.slugify("alpha beta gamma", url()).slug == "alpha-beta-gamma")
+
+@test
+fn test_symbol_expansion_is_a_language_decision() [io]
+    test.case("url_policy expands, because rust-c is not a post about Rust and C++")
+    test.assert(slugmake.slugify("Rust & C++", url()).slug == "rust-and-c-plus-plus")
+
+    test.case("github_policy does not, because GitHub's anchors do not")
+    test.assert(slugmake.slugify("Rust & C++", gh()).slug == "rust--c")
+
+    test.case("and a caller with another language passes its own list")
+    let de = [(38, "und")]
+    let o = slugmake.slugify_with_words("Katzen & Hunde", url(),
+                                        slugtrans.latin_table(), de)
+    test.assert(o.slug == "katzen-und-hunde")
+
+@test
+fn test_github_policy_is_a_compatibility_claim() [io]
+    // These are the answers GitHub's own anchor algorithm gives, and
+    // the ones this project's renderer gives. A table of contents that
+    // computed anything else would produce dead links.
+    test.case("spaces become hyphens and case is folded")
+    test.assert(slugmake.slugify("Getting Started", gh()).slug == "getting-started")
+
+    test.case("punctuation is REMOVED rather than replaced")
+    test.assert(slugmake.slugify("What's new?", gh()).slug == "whats-new")
+
+    test.case("a code span's backticks go, and what is inside stays")
+    test.assert(slugmake.slugify("The `novo fmt` command", gh()).slug
+                == "the-novo-fmt-command")
+
+    test.case("and is_canonical recognises its own output")
+    test.assert(slugpolicy.is_canonical(gh(), "getting-started"))
+    test.assert(not slugpolicy.is_canonical(gh(), "Getting-Started"))
+
+@test
+fn test_joining_two_slugs_does_not_double_the_separator() [io]
+    test.case("a section and a post")
+    test.assert(slugmake.join("guide", "install", url()) == "guide-install")
+
+    test.case("even when one side already carries one")
+    test.assert(slugmake.join("guide-", "-install", url()) == "guide-install")
+
+    test.case("and an empty side does not leave a separator behind")
+    test.assert(slugmake.join("guide", "", url()) == "guide")
+
+    test.case("tidy is the same rule on one string")
+    test.assert(slugmake.tidy("--a---b--", url()) == "a-b")
+
+@test
+fn test_the_buffer_form_appends_and_hands_the_notes_back_beside_it() [io]
+    let seed: [u8] = [47]
+
+    test.case("what was in the buffer is still at the front")
+    let out = slugmake.slugify_into(seed, "Hello", url(), slugtrans.latin_table())
+    test.assert(out.0[0] == 47)
+    test.assert(list.len(out.0) > 1)
+
+    test.case("and the notes are a list beside the bytes, because they are not bytes")
+    test.assert(list.len(out.1) == 0)
+
+@test
+fn test_the_two_modes_differ_in_what_they_keep_and_what_they_cost() [io]
+    test.case("the ASCII path takes a table and no Unicode data at all")
+    let a = slugmake.slugify_with("Café Münster", slugpolicy.url_policy(),
+                                  slugtrans.latin_table())
+    test.assert(a.slug == "cafe-munster")
+
+    test.case("an extended table changes which scripts survive, and nothing else")
+    let jp = slugmake.slugify_with("日本語", slugpolicy.url_policy(),
+                                   slugtrans.latin_table())
+    test.assert(jp.slug == slugpolicy.url_policy().empty_fallback)
+
+    test.case("the unicode mode is the one call that takes UniData — the 245 KB is visible")
+    let u = slugmake.slugify_unicode("Первая запись", slugpolicy.unicode_policy(),
+                                     udata.data_full())
+    test.assert(u.slug == "первая-запись")
+
+    test.case("it keeps letters in any script and still collapses punctuation")
+    let g = slugmake.slugify_unicode("Καλημέρα, κόσμε!", slugpolicy.unicode_policy(),
+                                     udata.data_full())
+    test.assert(g.slug == "καλημέρα-κόσμε")
+
+    test.case("and it still never answers an empty string")
+    let e = slugmake.slugify_unicode("🎉", slugpolicy.unicode_policy(),
+                                     udata.data_full())
+    test.assert(e.slug == slugpolicy.unicode_policy().empty_fallback)

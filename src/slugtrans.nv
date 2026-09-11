@@ -1,0 +1,197 @@
+// slugtrans.nv — the transliteration table, and where it stops.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE TABLE IS THIS PACKAGE'S OWN, AND IT IS TIERED, for the same
+// reason unicode-nv's is: the useful half is small and the complete
+// half is enormous. `deunicode` — itself derived from Perl's
+// `Text::Unidecode` — covers essentially all of Unicode in about
+// 500 KB, most of which is Han romanisation. A site generator slugging
+// English and Danish headings should not link 500 KB to turn `å` into
+// `aa`.
+//
+// So there are two tiers, and the signature says which one a caller
+// is using.
+//
+//   `latin_table()`     COMPILED IN, about 6 KB. Latin-1 Supplement,
+//                       Latin Extended-A and the used part of
+//                       Extended-B, Latin Extended Additional,
+//                       Greek and Coptic, and Cyrillic. That is every
+//                       European language written in an alphabet, and
+//                       it is what the overwhelming majority of
+//                       callers need.
+//
+//   `table_from_bytes`  THE REST, parsed from a blob the HOST read.
+//                       Hebrew, Arabic, Devanagari, Georgian,
+//                       Armenian, Thai, Kana, and Han. A `core`
+//                       package cannot read a file, so the bytes
+//                       arrive as an argument — which is also what
+//                       lets a program pick the tier at run time
+//                       rather than at link time.
+//
+// WHAT IS NOT IN EITHER, AND WHY IT IS NAMED. Han characters have no
+// single romanisation: 行 is `xing` or `hang` in Mandarin depending on
+// the word, and `gyou`, `kou` or `an` in Japanese. `Text::Unidecode`
+// picks one and is wrong about half the time, and a slug generator
+// that silently produces a wrong romanisation is worse than one that
+// says it dropped the characters. So the extended table carries the
+// Unidecode answers, `SlugScriptHan` is a script a caller can ask
+// about before trusting the output, and `SlugNoteDropped` is what a
+// caller gets when it is not loaded. A CJK site wants
+// `SlugModeUnicode` and a percent-encoded path, not a romanisation.
+//
+// TRANSLITERATION IS NOT NORMALISATION AND IS NOT CASE FOLDING.  This
+// module answers ASCII for a non-ASCII character. `é` is `e` here and
+// `e` + U+0301 under NFD; the difference matters because a decomposed
+// `é` reaches this table as two characters, the second of which has no
+// transliteration. So `slugmake` normalises to NFC before
+// transliterating, and this module's contract is over precomposed
+// input.
+
+// The scripts the tables cover, so a caller can ask before it trusts
+// the answer.
+pub enum SlugScript
+    // ASCII: no transliteration needed.
+    SlugScriptAscii
+    // Latin with diacritics — Latin-1 Supplement, Extended-A,
+    // Extended-B, Extended Additional. In the compiled table.
+    SlugScriptLatin
+    // Greek and Coptic. In the compiled table.
+    SlugScriptGreek
+    // Cyrillic, including the Extended blocks. In the compiled table.
+    SlugScriptCyrillic
+    // Hebrew. Extended table only.
+    SlugScriptHebrew
+    // Arabic. Extended table only.
+    SlugScriptArabic
+    // Devanagari. Extended table only.
+    SlugScriptDevanagari
+    // Georgian and Armenian. Extended table only.
+    SlugScriptCaucasus
+    // Thai and Lao. Extended table only.
+    SlugScriptThai
+    // Hiragana, Katakana and the halfwidth forms. Extended table only.
+    SlugScriptKana
+    // Han. Extended table only, and see the module comment: the
+    // romanisation is a guess, and this is the script for which the
+    // guess is worst.
+    SlugScriptHan
+    // Emoji, symbols, private use — nothing to transliterate, ever.
+    SlugScriptNone
+
+// A loaded table.
+//
+// Holding it as a value rather than as a module-level constant is what
+// lets a program choose its tier: a site generator for a Danish blog
+// holds `latin_table()`, and the same binary serving a multilingual
+// corpus holds the extended one.
+pub struct SlugTable
+    // Which scripts this table answers for, so `covers` is a lookup
+    // rather than a probe.
+    scripts: [SlugScript]
+    // A short name for the tier, for a log line: `"latin"` or
+    // `"full"`.
+    name: Str
+
+// The compiled-in table: Latin, Greek, Cyrillic. About 6 KB, and no
+// host involved.
+//
+// ```novo
+// use slugtrans
+//
+// let t = slugtrans.latin_table()
+// println(t.name)   // latin
+// ```
+pub fn latin_table() -> SlugTable []
+    todo("slug-nv.slugtrans.latin_table")
+
+// A table parsed out of bytes the host read.
+//
+// `None` when the blob is not one — a wrong magic, a truncated index,
+// a version this release does not know. The format is this package's
+// own and `pack_bytes` writes it, so a build step can generate the
+// blob from `deunicode`'s source data and ship it beside the binary.
+pub fn table_from_bytes(blob: [u8]) -> ?SlugTable []
+    todo("slug-nv.slugtrans.table_from_bytes")
+
+// Append a table's serialised form to `out`, for the build step that
+// makes the blob.
+pub fn pack_bytes(out: [u8], t: SlugTable) -> [u8] []
+    todo("slug-nv.slugtrans.pack_bytes")
+
+// Whether `t` has an answer for `ch`.
+//
+// The check a caller makes before deciding whether a dropped character
+// is a gap in the table or genuinely untransliterable.
+pub fn covers(t: SlugTable, ch: Int) -> Bool []
+    todo("slug-nv.slugtrans.covers")
+
+// Which script `ch` belongs to, for the purposes of this table.
+//
+// Coarser than a Unicode script property on purpose: the question this
+// answers is "which tier do I need", and Latin Extended-B and Latin-1
+// Supplement are one answer to that even though they are two blocks.
+pub fn script_of(ch: Int) -> SlugScript []
+    todo("slug-nv.slugtrans.script_of")
+
+// Whether a script is in the compiled-in tier.
+pub fn script_is_compiled(s: SlugScript) -> Bool []
+    todo("slug-nv.slugtrans.script_is_compiled")
+
+// The ASCII for one character, or an empty string when the table has
+// none.
+//
+// A `Str` rather than a byte because transliteration is not
+// one-to-one: `ß` is `ss`, `æ` is `ae`, `Ю` is `Yu`, and `№` is `No`.
+// A package whose table mapped a character to a character would have
+// had to drop all four.
+//
+// ```novo
+// use slugtrans
+//
+// println(slugtrans.char_ascii(slugtrans.latin_table(), 0x00DF))   // ss
+// ```
+pub fn char_ascii(t: SlugTable, ch: Int) -> Str []
+    todo("slug-nv.slugtrans.char_ascii")
+
+// Transliterate a whole string, character by character, with
+// uncovered characters dropped.
+//
+// The raw operation, without any of `slugmake`'s policy: no separator
+// collapsing, no case forcing, no length limit. Published because a
+// caller sometimes wants the transliteration and not the slug — a
+// search index normalising its terms, a sort key for a list of names.
+pub fn transliterate(t: SlugTable, text: Str) -> Str []
+    todo("slug-nv.slugtrans.transliterate")
+
+// The same, appended to the caller's buffer.
+pub fn transliterate_into(out: [u8], t: SlugTable, text: Str) -> [u8] []
+    todo("slug-nv.slugtrans.transliterate_into")
+
+// How many characters of `text` this table has no answer for.
+//
+// The number behind `SlugNoteDropped`, and the one a site owner needs:
+// a title that came out as three characters out of thirty did not
+// slugify, it disappeared, and nobody finds out from the slug itself.
+pub fn uncovered_count(t: SlugTable, text: Str) -> Int []
+    todo("slug-nv.slugtrans.uncovered_count")
+
+// The short-word substitutions `SlugPolicy.expand_symbols` applies, as
+// pairs of a character and its word: `&` to `and`, `@` to `at`, `%` to
+// `percent`, `+` to `plus`, `=` to `equals`, `#` to `number`, `$` to
+// `dollar`, `<` to `less`, `>` to `greater`, and the currency signs.
+//
+// Published as DATA because it is a language decision rather than a
+// script one — `&` is `und` in German — and a caller serving another
+// language passes its own list to `slugmake.slugify_with_words`.
+pub fn word_substitutions() -> [(Int, Str)] []
+    todo("slug-nv.slugtrans.word_substitutions")
+
+// The substitutions for a language named by its BCP 47 primary
+// subtag, or the English list for a tag this release has none for.
+//
+// `de`, `fr`, `es`, `da` and `en` at 0.1.0, and the README says how a
+// language is added: one row per symbol, and a test asserting the
+// round trip.
+pub fn word_substitutions_for(language: Str) -> [(Int, Str)] []
+    todo("slug-nv.slugtrans.word_substitutions_for")

@@ -1,0 +1,159 @@
+// slugpolicy.nv — every choice a slug generator makes, written down.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A SLUG IS A SEQUENCE OF DECISIONS, AND ALL OF THEM ARE ARBITRARY.
+// Is the separator a hyphen or an underscore? Is `C++` cut to `c` or
+// to `c-plus-plus`? Does a trailing separator survive? Is a slug that
+// came out 300 characters long cut at 80, and at a word boundary or in
+// the middle of one? Every one of those is a choice a program has
+// already made, usually in the body of a function, usually without
+// meaning to — and changing it later changes every URL the site has
+// ever published.
+//
+// So the choices are a value. `SlugPolicy` is the whole of it, and
+// three named policies are the three that exist in the wild:
+// `github_policy` is what a Markdown heading anchor is, `url_policy`
+// is what a permalink wants, and `unicode_policy` is what a site
+// serving international paths wants.
+//
+// THE NAMED POLICIES ARE COMPATIBILITY CLAIMS, NOT DEFAULTS SOMEBODY
+// LIKED. `github_policy` produces the same bytes as GitHub's own
+// heading anchors and as this project's own renderer, which matters
+// because a table of contents computes the fragment the renderer will
+// emit — and if the two disagree, every link in the index is dead. A
+// policy is the right shape for that claim: it can be tested against a
+// corpus, and it does not change when somebody improves the default.
+
+// What case the output is forced to.
+pub enum SlugCase
+    // Everything lower. What a URL wants, and what every named policy
+    // here uses: a path is case-sensitive on most servers and
+    // case-insensitive in most people's heads, and lower-casing is the
+    // only way those two agree.
+    SlugCaseLower
+    // Everything upper. Rare, and here because a slug is sometimes a
+    // filename in a system that shouts.
+    SlugCaseUpper
+    // Leave case alone.
+    SlugCaseKeep
+
+// Which characters survive.
+pub enum SlugMode
+    // ASCII letters and digits only; everything else is
+    // transliterated if the table knows it and dropped if it does not.
+    // The safe mode, and the one a permalink that has to survive being
+    // pasted into a chat window wants.
+    SlugModeAscii
+    // Letters and digits in any script, normalised to NFC; only
+    // punctuation, symbols and whitespace become separators. For a
+    // site that serves `/статьи/первая-запись` on purpose.
+    SlugModeUnicode
+
+// Where the length limit cuts.
+pub enum SlugTruncate
+    // At the last separator before the limit, so a slug never ends in
+    // half a word. What a person reading the URL expects.
+    SlugTruncateWord
+    // At the limit exactly, on a grapheme-cluster boundary. For a
+    // caller whose limit is a column width rather than a preference.
+    SlugTruncateCluster
+
+// The whole of it.
+pub struct SlugPolicy
+    // The character runs of dropped input collapse to. One byte in
+    // every policy that exists, but a `Str` because a caller building
+    // a filename may want `_` and a caller building a sentence-cased
+    // title may want ` `.
+    separator: Str
+    case: SlugCase
+    mode: SlugMode
+    // Longest slug, in grapheme clusters. Zero means no limit.
+    max_len: Int
+    truncate: SlugTruncate
+    // What `slugify` answers when NOTHING survives — an all-emoji
+    // title, a title in a script the table does not cover.
+    //
+    // NEVER THE EMPTY STRING, and the reason is the whole design: an
+    // empty slug is a URL that collides with its own index page, and
+    // every reference implementation returns one. The default is
+    // `"n-a"`, and a caller that would rather key off the note sets it
+    // to something it recognises.
+    empty_fallback: Str
+    // Keep a run of separators as one separator rather than removing
+    // the run entirely. On in every named policy; off for a caller
+    // building a key rather than a URL.
+    collapse_runs: Bool
+    // Remove a leading or trailing separator.
+    trim_separators: Bool
+    // Transliterate `&` to `and`, `@` to `at`, `%` to `percent` and
+    // the rest of the short word list, rather than dropping them.
+    //
+    // A separate flag from the script table because it is a LANGUAGE
+    // decision, not a script one: `&` is `and` in English and `und` in
+    // German, and a package that folded it into the transliteration
+    // table would have made that choice for everybody. The list is
+    // `slugtrans.word_substitutions`, and a caller with another
+    // language replaces it.
+    expand_symbols: Bool
+
+// GitHub's heading-anchor algorithm, and this project's renderer's.
+//
+// Lower case, hyphen separator, ASCII alphanumerics kept, runs of
+// anything else collapsed to one hyphen, leading and trailing hyphens
+// trimmed, no length limit, no symbol expansion. A compatibility
+// claim: a table of contents built with this policy computes the
+// fragment the renderer emits.
+//
+// ```novo
+// use slugpolicy
+//
+// let p = slugpolicy.github_policy()
+// println(p.separator)   // -
+// ```
+pub fn github_policy() -> SlugPolicy []
+    todo("slug-nv.slugpolicy.github_policy")
+
+// What a permalink wants: GitHub's, plus an 80-cluster limit that cuts
+// at a word boundary and the symbol expansions, because a post titled
+// `Rust & C++` should be `rust-and-c-plus-plus` rather than `rust-c`.
+pub fn url_policy() -> SlugPolicy []
+    todo("slug-nv.slugpolicy.url_policy")
+
+// For a site that serves international paths: letters in any script
+// kept and normalised to NFC, everything else as `url_policy`.
+//
+// The mode that needs `udata.UniData` — see `slugmake.slugify_unicode`
+// — and the one whose output is a valid path component but NOT a valid
+// hostname label. punycode-nv's `punyidna.host_to_ascii` is the wire
+// form for that; this package does not encode it, because a slug is a
+// path segment and a host label is a different grammar with a
+// different length limit.
+pub fn unicode_policy() -> SlugPolicy []
+    todo("slug-nv.slugpolicy.unicode_policy")
+
+// A policy with the separator replaced — the one field a caller
+// overrides often enough that spelling the whole struct out is worse.
+pub fn with_separator(p: SlugPolicy, separator: Str) -> SlugPolicy []
+    todo("slug-nv.slugpolicy.with_separator")
+
+// A policy with the length limit replaced.
+pub fn with_max_len(p: SlugPolicy, max_len: Int) -> SlugPolicy []
+    todo("slug-nv.slugpolicy.with_max_len")
+
+// Whether two policies would produce the same slug for every input.
+//
+// The check a migration makes before changing a policy: if the answer
+// is yes, no URL moves. Published because the comparison is not field
+// equality — `max_len` of 0 and of a number longer than any input
+// agree, and `collapse_runs` does not matter when the separator is
+// empty.
+pub fn same_output(a: SlugPolicy, b: SlugPolicy) -> Bool []
+    todo("slug-nv.slugpolicy.same_output")
+
+// Whether a string is already exactly what this policy would produce
+// for it — the check a route table makes on a slug a person typed in,
+// and the one a test makes to assert a stored slug has not drifted
+// from the policy that made it.
+pub fn is_canonical(p: SlugPolicy, s: Str) -> Bool []
+    todo("slug-nv.slugpolicy.is_canonical")

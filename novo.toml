@@ -1,0 +1,53 @@
+[package]
+name        = "slug-nv"
+version     = "0.0.1"
+description = "URL slugs: transliteration of Latin diacritics, Greek and Cyrillic to ASCII from a table the package owns, separator and case as a policy, a maximum length that cuts at a word boundary, and a Unicode-preserving mode that keeps letters and normalises to NFC.  `slugify` cannot fail and never answers an empty string; what happened — a character with no transliteration, a truncation, a reserved word, a collision — comes back as notes beside a slug that is always usable.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`.  A slug is arithmetic over a string the caller already holds.
+# The two things a slug generator is usually asked to know about the
+# world — which words a route table has reserved, and which slugs are
+# already taken — arrive as predicates the caller supplies, because
+# both are in a database this package cannot reach and must not
+# pretend to.
+layer       = "core"
+
+category    = "text"
+
+tags        = ["slug", "slugify", "url", "transliteration", "deunicode", "ascii", "permalink", "sans-io"]
+repository  = "https://github.com/novolang/slug-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "A slug that is always usable, and the notes saying what it cost"
+
+[dependencies]
+# unicode-nv, and ONLY the Unicode-preserving mode pays for it.
+#
+# The ASCII path needs nothing from it: the transliteration table is
+# this package's own, and deciding whether a byte is an ASCII letter or
+# digit is a comparison.  That is the path a site generator takes for
+# every heading it slugs, and it should not carry 245 KB of case tables
+# to do it.
+#
+# `slugmake.slugify_unicode` is the mode that does, and its signature
+# says so — it takes a `udata.UniData`, because NFC normalisation and
+# case mapping outside ASCII are exactly what that table is.  A caller
+# that never serves an international path never constructs one.
+#
+# `uclass`'s predicates take a codepoint and no table, and they are
+# what "keep the letters" means past ASCII: a Greek title kept in a
+# Unicode path is letters plus separators under UAX rules, not a byte
+# range somebody guessed.
+unicode-nv = "^0.0.1"

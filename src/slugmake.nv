@@ -1,0 +1,172 @@
+// slugmake.nv — the slug, and what it cost.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// **THE LOAD-BEARING INTERFACE OF THIS PACKAGE IS `SlugOutcome`, AND
+// THE LOAD-BEARING FACT IS THAT `slug` IS ALWAYS USABLE.** It is never
+// the empty string, `slugify` cannot fail, and every problem is a
+// note beside a slug a caller can already publish.
+//
+// Why that is worth designing around rather than returning a `Str`:
+// every reference implementation answers `""` for an input it could
+// not slug, and every one of them is used by a program that writes the
+// result into a route table. `python-slugify("🎉🎉🎉")` is `""`;
+// `slugify("日本語")` under the same crate is `""`; a title in Greek
+// with no transliteration table is `""`. The URL that produces is the
+// index page's, so the post overwrites the listing — and nothing
+// anywhere says so. `empty_fallback` makes that impossible and
+// `SlugNoteEmptyInput` makes it visible.
+//
+// `SlugNoteDropped` IS THE NOTE NOBODY ELSE REPORTS, and it is the
+// argument for notes being a LIST rather than an enum. A title of
+// thirty characters in a script the loaded table does not cover comes
+// out as the three ASCII characters it happened to contain. That is a
+// slug — it is not empty, it is unique, it routes — and it is useless,
+// and a site owner learns about it from a reader. The count is in the
+// note.
+//
+// THE NOTES ARE A LIST BECAUSE SEVERAL THINGS HAPPEN AT ONCE. A long
+// title in Cyrillic that collides with an existing post is
+// transliterated, truncated AND suffixed, and an enum could report one
+// of the three.
+//
+// NOTHING HERE READS THE WORLD. Whether a word is reserved and whether
+// a slug is taken are both facts in a database, and they arrive as
+// named predicates the caller supplies. `slugroute` is where those
+// two live; this module is the string.
+
+use udata
+use slugpolicy
+use slugtrans
+
+// What happened on the way to a slug.
+pub enum SlugNote
+    // Nothing survived: the slug is `SlugPolicy.empty_fallback`.
+    SlugNoteEmptyInput
+    // `count` characters had no entry in the loaded table and were
+    // dropped. See the module comment: this is the failure that looks
+    // like a success.
+    SlugNoteDropped(count: Int)
+    // `count` characters were transliterated out of their own script.
+    // Not a problem — reported so a caller can tell a slug that is a
+    // romanisation from one that is the title.
+    SlugNoteTransliterated(count: Int)
+    // The slug was cut to fit `max_len`; `full` is what it would have
+    // been.
+    SlugNoteTruncated(full: Str)
+    // A symbol was expanded to a word — `&` to `and`. Carried because
+    // it is the substitution a caller most often wants to override for
+    // its own language.
+    SlugNoteExpanded(count: Int)
+
+// A slug, and what it cost.
+pub struct SlugOutcome
+    // ALWAYS USABLE. Never empty, always canonical under the policy
+    // that made it. A caller that does not care about the notes reads
+    // this field and stops.
+    slug: Str
+    // Everything that happened, in the order the pipeline does it.
+    // Empty for a title that slugged cleanly, which is the ordinary
+    // case.
+    notes: [SlugNote]
+
+// Slug a title under a policy, using the compiled-in Latin table.
+//
+// The call a site generator makes. It cannot fail.
+//
+// ```novo
+// use slugpolicy
+// use slugmake
+//
+// let o = slugmake.slugify("Hello, World!", slugpolicy.url_policy())
+// println(o.slug)   // hello-world
+// ```
+pub fn slugify(title: Str, p: slugpolicy.SlugPolicy) -> SlugOutcome []
+    todo("slug-nv.slugmake.slugify")
+
+// Slug with a table the caller loaded — the extended one, for a
+// corpus that is not European.
+pub fn slugify_with(title: Str, p: slugpolicy.SlugPolicy, t: slugtrans.SlugTable) -> SlugOutcome []
+    todo("slug-nv.slugmake.slugify_with")
+
+// Slug with the caller's own symbol substitutions, for a language
+// whose `&` is not `and`.
+pub fn slugify_with_words(title: Str, p: slugpolicy.SlugPolicy, t: slugtrans.SlugTable,
+                          words: [(Int, Str)]) -> SlugOutcome []
+    todo("slug-nv.slugmake.slugify_with_words")
+
+// Slug in `SlugModeUnicode`: letters in any script kept and normalised
+// to NFC, punctuation and whitespace collapsed to the separator.
+//
+// THE ONE CALL THAT TAKES `UniData`, and the signature is the
+// disclosure. NFC normalisation and case mapping outside ASCII ARE
+// that table — 245 KB of it — and a caller that never serves an
+// international path never constructs one. The ASCII path above needs
+// nothing from unicode-nv at all.
+//
+// The output is a valid path SEGMENT. It is not a valid hostname
+// label: punycode-nv's `punyidna.host_to_ascii` is the wire form for
+// that, and this package does not encode it, because a host label has
+// a different grammar and a 63-byte limit this package's `max_len`
+// does not model.
+//
+// ```novo
+// use slugpolicy
+// use slugmake
+// use udata
+//
+// let o = slugmake.slugify_unicode("Первая запись", slugpolicy.unicode_policy(),
+//                                  udata.data_full())
+// println(o.slug)
+// ```
+pub fn slugify_unicode(title: Str, p: slugpolicy.SlugPolicy, d: udata.UniData) -> SlugOutcome []
+    todo("slug-nv.slugmake.slugify_unicode")
+
+// Slug, appended to the caller's buffer. The notes come back beside
+// it because they are not bytes.
+pub fn slugify_into(out: [u8], title: Str, p: slugpolicy.SlugPolicy,
+                    t: slugtrans.SlugTable) -> ([u8], [SlugNote]) []
+    todo("slug-nv.slugmake.slugify_into")
+
+// Whether an outcome carries no notes — the ordinary case, and the
+// check a caller makes before deciding whether to look at any of them.
+pub fn is_clean(o: SlugOutcome) -> Bool []
+    todo("slug-nv.slugmake.is_clean")
+
+// Whether an outcome carries a note of a kind that should be reported
+// to a person: `SlugNoteEmptyInput` and `SlugNoteDropped`.
+//
+// A named call rather than a caller's own match, because the two that
+// matter are exactly the two that look like success from the slug
+// alone, and a caller deciding for itself gets to forget one.
+pub fn needs_attention(o: SlugOutcome) -> Bool []
+    todo("slug-nv.slugmake.needs_attention")
+
+// How many characters were dropped, reading the note if there is one
+// and answering zero if there is not.
+pub fn dropped_count(o: SlugOutcome) -> Int []
+    todo("slug-nv.slugmake.dropped_count")
+
+// The longest prefix of `slug` that fits `max` clusters under
+// `truncate`.
+//
+// Published because a caller that built a slug itself — from a
+// database column, from a person's input — still wants the length rule
+// and should not reimplement the word-boundary search.
+pub fn truncate_at(slug: Str, max: Int, how: slugpolicy.SlugTruncate, separator: Str) -> Str []
+    todo("slug-nv.slugmake.truncate_at")
+
+// The separator runs collapsed and the ends trimmed, under a policy —
+// the last step of the pipeline, on its own, for a caller stitching
+// two slugs together.
+pub fn tidy(s: Str, p: slugpolicy.SlugPolicy) -> Str []
+    todo("slug-nv.slugmake.tidy")
+
+// Two slugs joined with the policy's separator, tidied.
+//
+// The call a hierarchical route makes — a section slug and a post slug
+// into one path segment — and it is here rather than in a caller
+// because joining with `+` produces a double separator whenever either
+// side already ends or begins with one.
+pub fn join(a: Str, b: Str, p: slugpolicy.SlugPolicy) -> Str []
+    todo("slug-nv.slugmake.join")

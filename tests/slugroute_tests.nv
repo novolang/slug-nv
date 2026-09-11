@@ -1,0 +1,175 @@
+// slugroute_tests.nv — the two facts that come from the caller, and
+// the numbering that has to match the renderer's.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: slug-nv.<module>.<fn>`.
+//
+// THE VECTORS ARE GitHub's duplicate-anchor numbering and this
+// project's own site generator, whose `nth_suffix` must stay
+// byte-identical to the renderer's charmap — the second occurrence is
+// `-2`, the third `-3`, and the first carries no suffix at all.
+//
+// THE ASSERTION THIS SUITE EXISTS FOR: a title that slugs to a
+// reserved word does not reach the route table unchanged. `/new` is a
+// route, a post titled "New" slugs to `new`, and the post is
+// unreachable for the life of the site.
+
+use std.test
+use std.list
+use slugpolicy
+use slugmake
+use slugroute
+use slugtrans
+
+fn reserved(s: Str) -> Bool
+    s == "new" or s == "edit" or s == "admin"
+
+fn nothing_taken(s: Str) -> Bool
+    false
+
+fn intro_taken(s: Str) -> Bool
+    s == "intro"
+
+fn intro_and_two_taken(s: Str) -> Bool
+    s == "intro" or s == "intro-2"
+
+@test
+fn test_a_title_that_slugs_to_a_route_does_not_reach_the_route_table() [io]
+    let r = slugroute.resolve("New", slugpolicy.url_policy(), reserved, nothing_taken)
+
+    test.case("the proposed slug WAS the reserved word")
+    test.assert(r.proposed == "new")
+
+    test.case("and what comes back is not")
+    test.assert(r.slug != "new")
+    test.assert(not reserved(r.slug))
+
+    test.case("the result says it was reserved rather than taken")
+    test.assert(r.was_reserved)
+
+    test.case("a title that does not collide passes through untouched")
+    let ok = slugroute.resolve("Release notes", slugpolicy.url_policy(), reserved,
+                               nothing_taken)
+    test.assert(ok.slug == "release-notes")
+    test.assert(ok.slug == ok.proposed)
+    test.assert(not ok.was_reserved)
+    test.assert(ok.suffix == 0)
+
+@test
+fn test_the_numbering_is_githubs_and_the_site_generators() [io]
+    test.case("the first occurrence carries no suffix")
+    test.assert(slugroute.unique("intro", "-", nothing_taken) == "intro")
+
+    test.case("THE SECOND IS -2, NOT -1 — a -1 implies a -0 somewhere")
+    test.assert(slugroute.unique("intro", "-", intro_taken) == "intro-2")
+
+    test.case("and the third is -3")
+    test.assert(slugroute.unique("intro", "-", intro_and_two_taken) == "intro-3")
+
+    test.case("unique_numbered says which suffix it used")
+    let n = slugroute.unique_numbered("intro", "-", intro_taken)
+    test.assert(n.0 == "intro-2")
+    test.assert(n.1 == 2)
+
+    test.case("and 0 when none was needed, so a caller can log a collision")
+    test.assert(slugroute.unique_numbered("intro", "-", nothing_taken).1 == 0)
+
+    test.case("split_suffix reads it back")
+    let s = slugroute.split_suffix("intro-2", "-")
+    test.assert(s.0 == "intro")
+    test.assert(s.1 == 2)
+
+    test.case("an unsuffixed slug splits to itself and zero")
+    test.assert(slugroute.split_suffix("intro", "-").1 == 0)
+
+    test.case("and a slug that merely ends in a number is not a suffix")
+    test.assert(slugroute.split_suffix("novo-2026", "-").0 == "novo-2026")
+
+@test
+fn test_a_document_numbers_its_own_headings_in_order() [io]
+    // The loop the site generator writes by hand, with its own `seen`
+    // array, for every heading in a page.
+    let out = slugroute.number_in_order(["Intro", "Intro", "Intro"],
+                                        slugpolicy.github_policy())
+
+    test.case("three headings, three distinct anchors")
+    test.assert(list.len(out) == 3)
+    test.assert(out[0] == "intro")
+    test.assert(out[1] == "intro-2")
+    test.assert(out[2] == "intro-3")
+
+    test.case("headings that differ are left alone")
+    let mixed = slugroute.number_in_order(["Intro", "Setup", "Intro"],
+                                          slugpolicy.github_policy())
+    test.assert(mixed[0] == "intro")
+    test.assert(mixed[1] == "setup")
+    test.assert(mixed[2] == "intro-2")
+
+    test.case("and two headings that differ only in punctuation DO collide")
+    let punct = slugroute.number_in_order(["What's new", "Whats new"],
+                                          slugpolicy.github_policy())
+    test.assert(punct[1] == "whats-new-2")
+
+@test
+fn test_the_reserved_list_is_a_starting_point_and_says_so() [io]
+    let common = slugroute.common_reserved()
+
+    test.case("it holds the words a web application almost always mounts")
+    test.assert(slugroute.reserved_in(common, "new"))
+    test.assert(slugroute.reserved_in(common, "admin"))
+    test.assert(slugroute.reserved_in(common, "api"))
+
+    test.case("and the three that break a JSON client rather than a router")
+    test.assert(slugroute.reserved_in(common, "null"))
+    test.assert(slugroute.reserved_in(common, "true"))
+    test.assert(slugroute.reserved_in(common, "undefined"))
+
+    test.case("it does not hold a word only one application mounted — which is the point")
+    test.assert(not slugroute.reserved_in(common, "changelog"))
+
+@test
+fn test_the_last_check_before_a_slug_becomes_a_path() [io]
+    test.case("an ordinary slug is a safe segment")
+    test.assert(slugroute.is_safe_segment("hello-world"))
+
+    test.case("the two relative names are not, whatever a policy produced them")
+    test.assert(not slugroute.is_safe_segment("."))
+    test.assert(not slugroute.is_safe_segment(".."))
+
+    test.case("nor is an empty one")
+    test.assert(not slugroute.is_safe_segment(""))
+
+    test.case("nor one with a separator in it — that is two segments, not one")
+    test.assert(not slugroute.is_safe_segment("a/b"))
+
+    test.case("nor one with a percent sign, which a decoder would read as an escape")
+    test.assert(not slugroute.is_safe_segment("50%25"))
+
+    test.case("A SLUG CAN BE CANONICAL AND STILL UNSAFE — the reason this is a second check")
+    let dotted = slugpolicy.with_separator(slugpolicy.url_policy(), ".")
+    test.assert(slugpolicy.is_canonical(dotted, ".."))
+    test.assert(not slugroute.is_safe_segment(".."))
+
+@test
+fn test_case_collisions_are_a_deployment_failure_and_are_checkable() [io]
+    test.case("two slugs differing only in case collide on a case-insensitive filesystem")
+    test.assert(slugroute.collides_on_case("Intro", "intro"))
+
+    test.case("two that differ otherwise do not")
+    test.assert(not slugroute.collides_on_case("intro", "setup"))
+
+    test.case("and a lower-cased policy makes the question moot, which is why it is the default")
+    let a = slugmake.slugify("Intro", slugpolicy.url_policy()).slug
+    let b = slugmake.slugify("INTRO", slugpolicy.url_policy()).slug
+    test.assert(a == b)
+
+@test
+fn test_resolve_with_a_loaded_table_carries_the_notes_through() [io]
+    test.case("the notes from slugmake survive into the resolved result")
+    let r = slugroute.resolve_with("日本語", slugpolicy.url_policy(),
+                                   slugtrans.latin_table(), reserved, nothing_taken)
+    test.assert(list.len(r.notes) > 0)
+
+    test.case("and the slug is still usable")
+    test.assert(r.slug != "")
+    test.assert(slugroute.is_safe_segment(r.slug))
