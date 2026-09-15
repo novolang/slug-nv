@@ -1,6 +1,6 @@
 [package]
 name        = "slug-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "URL slugs: transliteration of Latin diacritics, Greek and Cyrillic to ASCII from a table the package owns, separator and case as a policy, a maximum length that cuts at a word boundary, and a Unicode-preserving mode that keeps letters and normalises to NFC.  `slugify` cannot fail and never answers an empty string; what happened — a character with no transliteration, a truncation, a reserved word, a collision — comes back as notes beside a slug that is always usable.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 

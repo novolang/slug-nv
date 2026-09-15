@@ -1,255 +1,277 @@
 # slug-nv
 
-**Status: NOT IMPLEMENTED — interface only.**
+A slug is the human-readable part of a URL: the `hello-world` in
+`/posts/hello-world`. Making one means turning a title into a string
+that is safe in a path, readable, and different from every other slug
+the site already serves. This package does that for novo-lang. The
+transliteration answers come from
+[`deunicode`](https://docs.rs/deunicode) and Perl's
+[`Text::Unidecode`](https://metacpan.org/pod/Text::Unidecode) behind it,
+and the anchor algorithm is GitHub's. It is built on
+[unicode-nv](https://novo-lang.org/packages/unicode-nv).
 
-Every public function below is published with its signature and its
-effect row, and every body is `todo()`. Installing this package works;
-calling it panics with `not implemented`.
+**Status: NOT IMPLEMENTED — interface only.** Every function is declared
+with its full signature, but every body is a `todo()` that panics when
+called. The package is published so its design can be reviewed and
+depended on before it is implemented. Version 0.1.0 will be the first
+working release.
 
-## What this is
+## What it is
 
-URL slugs, sans-IO: a title in, a slug a route table can actually use
-out, and a list of notes saying what it cost.
+**Slugging** a title is four steps. Characters outside the target
+alphabet are **transliterated**, which means replaced by the letters
+that approximate them: `å` becomes `aa`, `ß` becomes `ss`, `Ю` becomes
+`Yu`. What is left is lowercased. Runs of anything that is not a letter
+or a digit collapse to a **separator**, usually a hyphen. The result is
+trimmed and, if the caller set a limit, truncated.
 
-- `slugpolicy` — every arbitrary choice a slug generator makes, as a
-  value, with three named policies that are compatibility claims;
-- `slugtrans` — the transliteration table, in two tiers, and where it
-  stops;
-- `slugmake` — `SlugOutcome`: the slug, and the notes;
-- `slugroute` — the two facts a slug generator cannot know, and the
-  numbering that has to match the renderer's.
+A **policy** is all of those choices as one value: the separator, the
+case rule, whether to keep non-ASCII letters, the length limit, where
+truncation cuts, what to answer when nothing survives, and whether to
+expand `&` into a word.
+
+A character that the transliteration table does not cover is
+**dropped**. Dropping is the failure that looks like a success: a
+thirty-character title in an uncovered script comes out as the three
+ASCII characters it happened to contain, which is a slug that routes
+and means nothing.
+
+Two facts about a slug live in the application rather than in the
+title. A slug is **reserved** when the route table already mounts that
+word, so a post titled "New" that slugs to `new` is unreachable behind
+the `/new` route. A slug is **taken** when another page already has it,
+which is what `Hello, World!` and `hello world` both do.
+
+An **anchor** is the same operation applied to a heading, so that a
+table of contents can compute the fragment the renderer will emit.
+
+## Install
 
 ```
 novo pkg add slug-nv
-novo pkg build
-novo test
 ```
 
-## The one example that will work
+## Example
 
-```novo ignore
+```novo
 use slugpolicy
+use slugmake
 use slugroute
 
-// A post's permalink: slugged, kept off the route table's own words,
-// and made unique against what the store already has.
-fn permalink(title: Str, reserved: fn(Str) -> Bool, taken: fn(Str) -> Bool) -> Str
-    slugroute.resolve(title, slugpolicy.url_policy(), reserved, taken).slug
+// The store's answer to "does anything already have this slug".
+fn not_taken(candidate: Str) -> Bool
+    false
+
+// The route table's answer to "is this one of my own words".
+fn is_reserved(candidate: Str) -> Bool
+    slugroute.reserved_in(slugroute.common_reserved(), candidate)
+
+fn main() [io]
+    // Slug a title on its own. This never fails and never answers the
+    // empty string; anything that went wrong is in `notes`.
+    let outcome = slugmake.slugify("Hello, World!", slugpolicy.url_policy())
+    println(outcome.slug)
+    if slugmake.needs_attention(outcome)
+        println("the slug lost something the title carried")
+
+    // The same title as a permalink: kept off the route table's own
+    // words, and numbered against what the store already holds.
+    let resolved = slugroute.resolve("Hello, World!", slugpolicy.url_policy(),
+                                     is_reserved, not_taken)
+    println(resolved.slug)
 ```
 
-## The load-bearing interface: `SlugOutcome`
+Build and test with `novo pkg build` and `novo test`. Today `novo test`
+fails on purpose: every test reaches a
+`not implemented: slug-nv.<module>.<fn>` panic. The tests are the
+specification the implementation will have to satisfy.
 
-```novo ignore
-pub struct SlugOutcome
-    slug: Str             // ALWAYS USABLE. Never empty.
-    notes: [SlugNote]
+## What the package contains
+
+| Module | Contents |
+| --- | --- |
+| `slugpolicy` | Every choice a slug generator makes, as one value, with three named policies. |
+| `slugtrans` | The transliteration table in two tiers, the script a character belongs to, and the symbol word list. |
+| `slugmake` | Slugging a title, and the notes saying what it cost. |
+| `slugroute` | Reserved words, collisions, the numbering, and slugging a list of headings in document order. |
+
+## How to choose an entry point
+
+**`slugmake.slugify` is the whole of it for a caller with no route
+table.** A title and a policy in, a slug and its notes out.
+`slugify_into` appends to a buffer you own.
+
+**`slugroute.resolve` is what a permalink wants.** It slugs, checks the
+result against the reserved predicate, then numbers it against the
+taken predicate.
+
+**`slugroute.number_in_order` slugs a whole list at once.** It is the
+call a page's table of contents makes: every heading in document order,
+with duplicates numbered as they appear.
+
+**`slugmake.slugify_unicode` keeps letters in any script.** It is the
+one function here that takes a `UniData`, because normalising and case
+mapping outside ASCII are that table. See rule 8.
+
+**`slugmake.slugify_with` takes a transliteration table you chose.**
+Use it with `slugtrans.table_from_bytes` when the compiled-in Latin
+table is not enough.
+
+**`slugpolicy.github_policy()` is a compatibility claim, not a
+preference.** Use it for heading anchors, so a table of contents and a
+renderer agree. `url_policy()` is that plus a length limit and symbol
+expansion, for permalinks. `unicode_policy()` keeps non-ASCII letters.
+
+## The rules a user needs
+
+1. **`slugify` cannot fail and never answers the empty string.** When
+   nothing survives, the answer is `SlugPolicy.empty_fallback`, which
+   defaults to `n-a`, and `SlugNoteEmptyInput` is reported. An empty
+   slug is a URL that collides with the index page, and the reference
+   implementations all return one.
+2. **Read the notes, or at least call `needs_attention`.** It is true
+   for exactly the two notes that look like success from the slug
+   alone: the input that produced nothing, and the input that was
+   partly dropped.
+3. **Notes are a list because several things happen at once.** A long
+   Cyrillic title colliding with an existing post is transliterated,
+   truncated and suffixed. An enum could report one of the three.
+4. **A slug is not a function of the title alone.** `slugroute.resolve`
+   takes the reserved and taken predicates as functions the caller
+   supplies. A list of reserved words shipped by this package would be
+   stale on the day it published and wrong for every application that
+   mounted one more route. `common_reserved()` is a starting point and
+   says so.
+5. **The second occurrence is numbered `-2`, not `-1`.** The first
+   carries no suffix, so a `-1` would imply a `-0` somewhere. This is
+   GitHub's numbering and this project's site generator's.
+   `SlugResolved.suffix` is 0 when nothing collided.
+6. **A character maps to a string, not to a character.** `ß` is `ss`,
+   `æ` is `ae`, `Ю` is `Yu`, `№` is `No`. A table mapping character to
+   character would have had to drop all four.
+7. **The transliteration table is tiered.** `latin_table()` is compiled
+   in and covers the European alphabets. `table_from_bytes` takes the
+   rest as bytes the host read, which is how a `core` package reaches
+   a large table without performing any input. `slugtrans.covers`
+   answers whether a given table knows a character, and
+   `uncovered_count` answers how much of a title it would drop.
+8. **Only `slugify_unicode` takes a `UniData`.** The signature is the
+   disclosure that NFC normalisation and non-ASCII case mapping cost
+   the 245 KB Unicode table. The ASCII path uses this package's own
+   table and needs nothing from unicode-nv.
+9. **Han is transliterated by a table that cannot be right.** 行 is
+   `xing` or `hang` in Mandarin depending on the word, and `gyou`, `kou`
+   or `an` in Japanese. The extended table carries Unidecode's single
+   answer. `slugtrans.script_of` reports `SlugScriptHan` so a caller can
+   check before trusting the output, and a CJK site probably wants
+   `SlugModeUnicode` with a percent-encoded path instead.
+10. **Symbol expansion is a language decision.** `&` is `and` in
+    English and `und` in German, so the list is data rather than part
+    of the transliteration table. `slugtrans.word_substitutions` is the
+    English list and `word_substitutions_for` takes a language tag.
+    `SlugPolicy.expand_symbols` turns it on.
+11. **`SlugTruncateWord` cuts at the last separator before the limit.**
+    `SlugTruncateCluster` cuts at the limit exactly, on a grapheme
+    cluster boundary. The limit is counted in grapheme clusters, and 0
+    means no limit.
+12. **A Unicode slug is a valid path segment, not a valid host
+    label.** A host label is a different grammar with a 63-byte limit
+    that `max_len` does not model.
+    [punycode-nv](https://novo-lang.org/packages/punycode-nv)'s
+    `punyidna.host_to_ascii` is the wire form for a hostname.
+13. **`slugpolicy.is_canonical` checks that a string is already what a
+    policy would produce.** It is how a compatibility claim becomes a
+    test rather than a comment. `same_output` compares two policies.
+14. **`slugroute.collides_on_case` answers whether two slugs differ
+    only by case.** A path is case-sensitive on most servers and
+    case-insensitive in most people's heads, which is why every named
+    policy lowercases.
+
+## What is not included
+
+- **Reading a database, a filesystem or a clock.** The two facts a slug
+  generator cannot know arrive as predicates the caller supplies.
+- **A shipped list of reserved route names.** See rule 4.
+- **Punycode and IDNA.** See rule 12.
+- **Percent-encoding.** A slug under `SlugModeAscii` needs none. A
+  Unicode slug that has to go into a URL is percent-encoded by whatever
+  builds the URL.
+- **Running on a microcontroller.** The package makes no such claim and
+  carries no device probe. A slug is a new string by construction,
+  because transliterating one character can produce two, the notes are
+  a list, and the extended table is a blob a host read. Firmware that
+  wants a filename-safe key wants a fixed-buffer function over a byte
+  range, which would be a different surface.
+- **A full Unicode transliteration table compiled in.** `deunicode`
+  covers essentially all of Unicode in about 500 KB, most of it Han
+  romanisation. A site slugging English and Danish headings should not
+  link it.
+
+## Related packages
+
+- [unicode-nv](https://novo-lang.org/packages/unicode-nv) is the only
+  dependency, and only the Unicode-preserving mode pays for it. Its
+  `uclass` predicates take a codepoint and no table, and they are what
+  "keep the letters" means past ASCII.
+- [punycode-nv](https://novo-lang.org/packages/punycode-nv) encodes a
+  hostname label. This package does not depend on it; a caller that
+  needs a host label calls it directly.
+- [markdown-nv](https://novo-lang.org/packages/markdown-nv) generates
+  heading anchors as part of rendering. A table of contents built with
+  `github_policy()` computes the same fragments.
+- [i18n-nv](https://novo-lang.org/packages/i18n-nv) is message
+  catalogues and plural rules. It is the package for text a person
+  reads, where this one is for text a router reads.
+
+## Tests
+
+The references are `deunicode` and `Text::Unidecode` behind it for the
+transliteration answers, `python-slugify` and the Rust `slug` crate for
+the pipeline and its test suite, and GitHub's heading-anchor algorithm
+for `github_policy` and the duplicate numbering. Where the references
+disagree, the test case names the one this package follows.
+
+```bash
+novo test tests/slugtrans_tests.nv   #  8 tests: the table, its tiers and its scripts
+novo test tests/slugmake_tests.nv    # 11 tests: the pipeline and every note
+novo test tests/slugroute_tests.nv   #  7 tests: reserved words, collisions, numbering
 ```
 
-`slugify` cannot fail, and it never answers the empty string. Every
-problem is a note beside a slug the caller can already publish.
+The suite asserts that an all-emoji title answers the fallback rather
+than the empty string, that a title partly outside the table reports
+how much was dropped, that `ß` becomes `ss` rather than being dropped,
+that a truncation cuts at a word boundary and keeps the full slug in
+its note, that the second collision is numbered 2, that a reserved word
+is refused before a collision is checked, and that
+`github_policy()` output is canonical under itself.
 
-That is worth designing around rather than returning a `Str`, because
-every reference implementation answers `""` for an input it could not
-slug — `python-slugify("🎉🎉🎉")` is `""`, and so is the `slug` crate's
-answer for a title in a script its table does not cover. The URL that
-produces is the index page's, so the post overwrites the listing, and
-nothing anywhere says so. `SlugPolicy.empty_fallback` makes that
-impossible and `SlugNoteEmptyInput` makes it visible.
+The tests compile today and fail at run, each on the
+`not implemented: slug-nv.<module>.<fn>` panic that is its body. That
+is the expected state of an interface release. They turn green one at a
+time as bodies land.
 
-**`SlugNoteDropped` is the note nobody else reports, and it is the
-argument for notes being a list.** A thirty-character title in a script
-the loaded table does not cover comes out as the three ASCII characters
-it happened to contain. That is a slug — not empty, unique, routes —
-and it is useless, and the site owner hears about it from a reader.
-`slugmake.needs_attention` is true for exactly the two notes that look
-like success from the slug alone.
+## Implementation status
 
-The notes are a **list** because several things happen at once: a long
-Cyrillic title colliding with an existing post is transliterated,
-truncated *and* suffixed, and an enum could report one of the three.
+Nothing is implemented. The table lists the surface an implementation
+has to fill.
 
-## The second decision: a slug is not a function of the title alone
+| Item | Implemented |
+| --- | --- |
+| `slugpolicy.github_policy`, `.url_policy`, `.unicode_policy` | no |
+| `slugpolicy.with_separator`, `.with_max_len`, `.same_output`, `.is_canonical` | no |
+| `slugtrans.latin_table`, `.table_from_bytes`, `.pack_bytes`, `.covers` | no |
+| `slugtrans.script_of`, `.script_is_compiled`, `.uncovered_count` | no |
+| `slugtrans.char_ascii`, `.transliterate`, `.transliterate_into` | no |
+| `slugtrans.word_substitutions`, `.word_substitutions_for` | no |
+| `slugmake.slugify`, `.slugify_with`, `.slugify_with_words`, `.slugify_unicode`, `.slugify_into` | no |
+| `slugmake.is_clean`, `.needs_attention`, `.dropped_count` | no |
+| `slugmake.truncate_at`, `.tidy`, `.join` | no |
+| `slugroute.resolve`, `.resolve_with`, `.number_in_order` | no |
+| `slugroute.unique`, `.unique_numbered`, `.split_suffix` | no |
+| `slugroute.common_reserved`, `.reserved_in`, `.is_safe_segment`, `.collides_on_case` | no |
 
-Two facts are missing from every library that takes only a string, and
-both live in a database this package cannot reach:
+## Licence
 
-**Reserved.** A route table has words that are not posts — `/new`,
-`/edit`, `/admin`, `/api`, and whatever else that application mounted.
-A post titled "New" slugs to `new`, the literal route matches first,
-and the post is unreachable for the life of the site.
+Apache-2.0. See `LICENSE`.
 
-**Taken.** `Hello, World!` and `hello world` both give `hello-world`,
-and so do a post and its own translation. A generator that ignores that
-overwrites a page.
-
-So `slugroute.resolve` takes both as `fn(Str) -> Bool` — named
-functions the caller supplies, the same shape cookie-nv uses for the
-Public Suffix List and for the same reason: a list this package shipped
-would be stale the day it published and wrong for every application
-that mounted one more route. `common_reserved()` exists as a starting
-point and its doc comment says it is not the answer.
-
-The numbering is GitHub's and this project's site generator's: the
-second occurrence is `-2`, not `-1`, because the first carries no
-suffix and a `-1` implies a `-0` somewhere.
-
-## The third: the transliteration table is tiered
-
-`deunicode` — itself Perl's `Text::Unidecode` — covers essentially all
-of Unicode in about 500 KB, most of it Han romanisation. A site
-generator slugging English and Danish headings should not link 500 KB
-to turn `å` into `aa`. So:
-
-| tier | size | scripts |
-| --- | --- | --- |
-| `latin_table()`, compiled in | ~6 KB | Latin-1 Supplement, Latin Extended-A, the used part of Extended-B, Latin Extended Additional, Greek and Coptic, Cyrillic |
-| `table_from_bytes(blob)` | the rest | Hebrew, Arabic, Devanagari, Georgian, Armenian, Thai, Kana, Han |
-
-The compiled tier is every European language written in an alphabet.
-The rest arrives as bytes **the host read**, because a `core` package
-reads nothing — which is also what lets a program pick its tier at run
-time rather than at link time. It is the same split unicode-nv makes,
-for the same reason.
-
-**Han is named rather than approximated.** 行 is `xing` or `hang` in
-Mandarin depending on the word, and `gyou`, `kou` or `an` in Japanese.
-`Text::Unidecode` picks one and is wrong about half the time. The
-extended table carries Unidecode's answers, `SlugScriptHan` is a script
-a caller can ask about before trusting the output, and a CJK site
-almost certainly wants `SlugModeUnicode` and a percent-encoded path
-instead.
-
-A character maps to a **`Str`**, not a character: `ß` is `ss`, `æ` is
-`ae`, `Ю` is `Yu`, `№` is `No`. A table that mapped character to
-character would have had to drop all four.
-
-## The Unicode-preserving mode, and punycode
-
-`slugmake.slugify_unicode` keeps letters in any script and normalises
-to NFC, for a site that serves `/статьи/первая-запись` on purpose.
-
-It is **the one call that takes `udata.UniData`**, and the signature is
-the disclosure: NFC normalisation and case mapping outside ASCII *are*
-that 245 KB table. The ASCII path needs nothing from unicode-nv at all,
-and it is the path a site generator takes for every heading it slugs.
-
-Its output is a valid path **segment**. It is not a valid hostname
-label — punycode-nv's `punyidna.host_to_ascii` is the wire form for
-that, and this package does not encode it, because a host label is a
-different grammar with a 63-byte limit `max_len` does not model.
-
-## The named policies are compatibility claims
-
-`github_policy()` produces the same bytes as GitHub's heading anchors
-and as this project's own renderer. That matters because a table of
-contents computes the fragment the renderer will emit, and if the two
-disagree every link in the index is dead. A policy is the right shape
-for a claim like that: it can be tested against a corpus, and it does
-not move when somebody improves the default.
-
-`url_policy()` is what a permalink wants — GitHub's, plus an 80-cluster
-limit that cuts at a word boundary and the symbol expansions, because a
-post titled `Rust & C++` should be `rust-and-c-plus-plus` and not
-`rust-c`.
-
-Symbol expansion is a **language** decision, not a script one — `&` is
-`und` in German — so the list is data (`slugtrans.word_substitutions`)
-and a caller passes its own.
-
-## The layer, and why
-
-`core`. A slug is arithmetic over a string the caller already holds.
-The two things a slug generator is usually asked to know about the
-world arrive as predicates, so nothing here reads a database, a
-filesystem or a clock. There is no effect-polymorphic function: a title
-is a value, not a stream.
-
-## `@tier(embedded)` is not claimed
-
-There is no device consumer. A slug is a new string by construction —
-transliterating one character can produce two — the notes are a list,
-and the extended table is a blob a host read. A firmware that needed a
-filename-safe key would want a fixed-buffer `slugify_into` over a byte
-range, which is a different surface rather than an annotation on this
-one. The honest form is the absence of the claim.
-
-## The reference implementation
-
-`deunicode` (and `Text::Unidecode` behind it) for the transliteration
-answers; `python-slugify` and the `slug` crate for the pipeline and its
-test suite; GitHub's heading-anchor algorithm for `github_policy` and
-for the duplicate numbering. Where the references disagree the test
-case says which one this package follows.
-
-## Dependencies
-
-`unicode-nv ^0.0.1`, and **only the Unicode-preserving mode pays for
-it**: `slugify_unicode` takes a `udata.UniData` in its signature, and
-`uclass`'s predicates — which take a codepoint and no table — are what
-"keep the letters" means past ASCII. The ASCII path uses this package's
-own table and nothing else.
-
-punycode-nv is named and not depended on: a slug is a path segment, a
-host label is a different grammar, and the caller that needs one calls
-`punyidna.host_to_ascii` itself.
-
-## The consumers, and what adopting this would take
-
-**`orbit/static-site-generator`** is the consumer this package is
-measured against, and it has the whole problem already, hand-written in
-`src/main.nv`:
-
-- `slug_heading(t: Str) -> Str` (24 lines) is `github_policy` applied
-  to one string. Its own comment says it **must stay byte-identical to
-  the renderer's charmap in `bin/novo_rt.c`** — which is exactly the
-  compatibility claim `slugpolicy.is_canonical` and the named policy
-  exist to make testable rather than to leave as a comment.
-- `nth_suffix(seen: [Str], slug: Str) -> Str` is `slugroute.unique`
-  over a list, and the caller keeps the `seen` array by hand. The whole
-  loop — every heading in a page, numbered in document order — is
-  `slugroute.number_in_order`.
-- Neither reports anything. A heading in Japanese, or one that is only
-  an emoji, currently produces an empty fragment, and the generator
-  writes `<h2 id="">`. That is the `SlugNoteEmptyInput` case, and it is
-  live in the tree today.
-
-Adopting it deletes both functions and closes that gap; the policy is
-`github_policy()` and the compatibility claim becomes a test.
-
-**`orbit/website`** and the registry's package pages want the same
-thing for their own headings, and `url_policy` for the permalinks.
-
-**novim** and **novoterm** are not consumers.
-
-## What a row wanted to widen
-
-Nothing. Every function here is `[]`.
-
-Two things the plan's row did not anticipate:
-
-**"URL slugs for the site generator" is one policy, not the package.**
-The row implies a function; what the consumer actually has is two
-functions, a compatibility constraint against a C renderer, and a
-collision loop with its own state. The package is shaped around that,
-and `slugpolicy` exists because the alternative — a default somebody
-liked — cannot carry a compatibility claim.
-
-**The transliteration table is the package's biggest open question,
-and it is a data question rather than an interface one.** The tier
-split is in the interface (`SlugTable`, `latin_table`,
-`table_from_bytes`, `covers`, `script_of`), but the actual 6 KB of
-compiled table and the blob format are the implementation lane's, and
-the size of the compiled tier is the number to revisit at 0.1.0: if
-Greek and Cyrillic push it past what an embedded-adjacent consumer
-would tolerate, the split moves to Latin-only compiled and everything
-else in the blob, with no signature changing.
-
-## The surface
-
-| module | `pub fn` | `pub struct` | `pub enum` | `pub alias` |
-| --- | --- | --- | --- | --- |
-| `slugpolicy` | 7 | 1 | 3 | — |
-| `slugtrans` | 12 | 1 | 1 | — |
-| `slugmake` | 11 | 1 | 1 | — |
-| `slugroute` | 10 | 1 | — | 2 |
-| **total** | **40** | **4** | **5** | **2** |
+<!-- docs/writing-a-readme.md is the style guide for this page. -->

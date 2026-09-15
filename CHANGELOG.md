@@ -5,6 +5,10 @@ All notable changes to slug-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.0.2 — 2026-09-15
+
+README rewritten to the package README style guide (docs/writing-a-readme.md); no change to the interface.
+
 ## 0.0.1 — 2026-09-11
 
 The **interface**: every signature and every effect row, and no bodies.
@@ -48,3 +52,26 @@ The **interface**: every signature and every effect row, and no bodies.
   a host label is a different grammar with a 63-byte limit.
 - **`@tier(embedded)` is not claimed** — a slug is a new string by
   construction, and a device variant would be a different surface.
+
+### Design notes
+
+The consumer the surface was measured against is the static site
+generator, which has the whole problem hand-written in `src/main.nv`.
+Its `slug_heading` is 24 lines and is `github_policy()` applied to one
+string, with a comment saying it must stay byte-identical to the
+renderer's character map in `bin/novo_rt.c`; that comment is what
+`slugpolicy.is_canonical` and the named policy turn into a test. Its
+`nth_suffix` over a hand-kept `seen` array is `slugroute.unique`, and
+the loop around it is `slugroute.number_in_order`. Neither reports
+anything, so a heading in Japanese or one that is only an emoji
+produces `<h2 id="">` today, which is the `SlugNoteEmptyInput` case.
+The project website and the registry's package pages want the same for
+their headings and `url_policy` for permalinks.
+
+The transliteration table is the package's biggest open question and it
+is a data question rather than an interface one. The tier split is in
+the interface; the 6 KB of compiled table and the blob format are the
+implementation lane's. The number to revisit at 0.1.0 is the size of
+the compiled tier: if Greek and Cyrillic push it too far, the split
+moves to Latin-only compiled with everything else in the blob, and no
+signature changes.
