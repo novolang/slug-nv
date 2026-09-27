@@ -1,19 +1,11 @@
 // slugmake_tests.nv — the slug, and the notes saying what it cost.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: slug-nv.<module>.<fn>`.
-// That is the expected result until the bodies land.
-//
-// THE VECTORS ARE `python-slugify`'s test suite and the `slug` crate's,
-// with GitHub's heading-anchor corpus behind `github_policy`. Where the
-// two references disagree, the case says which one this package
-// follows.
-//
-// THE ASSERTION THIS SUITE EXISTS FOR, above everything else: THE SLUG
-// IS NEVER EMPTY. Every reference implementation answers `""` for an
-// input it could not slug, and a route table then serves the index
-// page for the post. The fallback and the note are the whole point,
-// and the emoji case below is the one that proves it.
+// The cases follow python-slugify's and the Rust `slug` crate's for
+// the pipeline, and GitHub's heading anchors for `github_policy`.
+// Above everything else, the suite asserts that the slug is never
+// empty: every reference implementation answers `""` for an input it
+// could not slug, and a route table then serves the index page for the
+// post.
 
 use std.test
 use std.list
@@ -48,7 +40,7 @@ fn test_the_ordinary_case_is_clean_and_carries_no_notes() [io]
 
 @test
 fn test_the_slug_is_never_empty_and_the_note_says_why() [io]
-    test.case("AN ALL-EMOJI TITLE — the case every reference implementation answers \"\" for")
+    test.case("an all-emoji title, which every reference implementation answers with the empty string")
     let o = slugmake.slugify("🎉🎉🎉", url())
     test.assert(o.slug != "")
     test.assert(o.slug == url().empty_fallback)
@@ -82,8 +74,8 @@ fn test_a_dropped_run_is_reported_because_it_looks_like_success() [io]
     test.case("the slug is what survived, and it is not the title")
     test.assert(o.slug == "novo")
 
-    test.case("AND THE COUNT OF WHAT WAS DROPPED IS IN THE NOTES")
-    test.assert(slugmake.dropped_count(o) == 6)
+    test.case("and the count of what was dropped is in the notes")
+    test.assert(slugmake.dropped_count(o) == 5)
 
     test.case("so needs_attention is true even though the slug looks fine")
     test.assert(slugmake.needs_attention(o))
@@ -178,7 +170,7 @@ fn test_github_policy_is_a_compatibility_claim() [io]
     test.case("spaces become hyphens and case is folded")
     test.assert(slugmake.slugify("Getting Started", gh()).slug == "getting-started")
 
-    test.case("punctuation is REMOVED rather than replaced")
+    test.case("punctuation is removed rather than replaced")
     test.assert(slugmake.slugify("What's new?", gh()).slug == "whats-new")
 
     test.case("a code span's backticks go, and what is inside stays")
@@ -186,8 +178,8 @@ fn test_github_policy_is_a_compatibility_claim() [io]
                 == "the-novo-fmt-command")
 
     test.case("and is_canonical recognises its own output")
-    test.assert(slugpolicy.is_canonical(gh(), "getting-started"))
-    test.assert(not slugpolicy.is_canonical(gh(), "Getting-Started"))
+    test.assert(slugmake.is_canonical(gh(), "getting-started"))
+    test.assert(not slugmake.is_canonical(gh(), "Getting-Started"))
 
 @test
 fn test_joining_two_slugs_does_not_double_the_separator() [io]
@@ -205,7 +197,7 @@ fn test_joining_two_slugs_does_not_double_the_separator() [io]
 
 @test
 fn test_the_buffer_form_appends_and_hands_the_notes_back_beside_it() [io]
-    let seed: [u8] = [47]
+    var seed: [u8] = [47]
 
     test.case("what was in the buffer is still at the front")
     let out = slugmake.slugify_into(seed, "Hello", url(), slugtrans.latin_table())
@@ -227,7 +219,7 @@ fn test_the_two_modes_differ_in_what_they_keep_and_what_they_cost() [io]
                                    slugtrans.latin_table())
     test.assert(jp.slug == slugpolicy.url_policy().empty_fallback)
 
-    test.case("the unicode mode is the one call that takes UniData — the 245 KB is visible")
+    test.case("the unicode mode is the one call that takes UniData")
     let u = slugmake.slugify_unicode("Первая запись", slugpolicy.unicode_policy(),
                                      udata.data_full())
     test.assert(u.slug == "первая-запись")

@@ -1,18 +1,11 @@
 // slugroute_tests.nv — the two facts that come from the caller, and
 // the numbering that has to match the renderer's.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: slug-nv.<module>.<fn>`.
-//
-// THE VECTORS ARE GitHub's duplicate-anchor numbering and this
-// project's own site generator, whose `nth_suffix` must stay
-// byte-identical to the renderer's charmap — the second occurrence is
-// `-2`, the third `-3`, and the first carries no suffix at all.
-//
-// THE ASSERTION THIS SUITE EXISTS FOR: a title that slugs to a
-// reserved word does not reach the route table unchanged. `/new` is a
-// route, a post titled "New" slugs to `new`, and the post is
-// unreachable for the life of the site.
+// The numbering is the project's Markdown renderer's for duplicate
+// heading anchors: the second occurrence is `-2`, the third `-3`, and
+// the first carries no suffix.  The suite also asserts that a title
+// that slugs to a reserved word does not reach the route table
+// unchanged.
 
 use std.test
 use std.list
@@ -37,7 +30,7 @@ fn intro_and_two_taken(s: Str) -> Bool
 fn test_a_title_that_slugs_to_a_route_does_not_reach_the_route_table() [io]
     let r = slugroute.resolve("New", slugpolicy.url_policy(), reserved, nothing_taken)
 
-    test.case("the proposed slug WAS the reserved word")
+    test.case("the proposed slug was the reserved word")
     test.assert(r.proposed == "new")
 
     test.case("and what comes back is not")
@@ -60,7 +53,7 @@ fn test_the_numbering_is_githubs_and_the_site_generators() [io]
     test.case("the first occurrence carries no suffix")
     test.assert(slugroute.unique("intro", "-", nothing_taken) == "intro")
 
-    test.case("THE SECOND IS -2, NOT -1 — a -1 implies a -0 somewhere")
+    test.case("the second is -2, not -1, since a -1 implies a -0 somewhere")
     test.assert(slugroute.unique("intro", "-", intro_taken) == "intro-2")
 
     test.case("and the third is -3")
@@ -124,7 +117,7 @@ fn test_the_reserved_list_is_a_starting_point_and_says_so() [io]
     test.assert(slugroute.reserved_in(common, "true"))
     test.assert(slugroute.reserved_in(common, "undefined"))
 
-    test.case("it does not hold a word only one application mounted — which is the point")
+    test.case("it does not hold a word only one application mounted")
     test.assert(not slugroute.reserved_in(common, "changelog"))
 
 @test
@@ -139,15 +132,15 @@ fn test_the_last_check_before_a_slug_becomes_a_path() [io]
     test.case("nor is an empty one")
     test.assert(not slugroute.is_safe_segment(""))
 
-    test.case("nor one with a separator in it — that is two segments, not one")
+    test.case("nor one with a separator in it, which is two segments")
     test.assert(not slugroute.is_safe_segment("a/b"))
 
     test.case("nor one with a percent sign, which a decoder would read as an escape")
     test.assert(not slugroute.is_safe_segment("50%25"))
 
-    test.case("A SLUG CAN BE CANONICAL AND STILL UNSAFE — the reason this is a second check")
-    let dotted = slugpolicy.with_separator(slugpolicy.url_policy(), ".")
-    test.assert(slugpolicy.is_canonical(dotted, ".."))
+    test.case("a slug can be canonical and still unsafe, which is why this is a second check")
+    let dotted = slugpolicy.with_separator(slugpolicy.github_policy(), ".")
+    test.assert(slugmake.is_canonical(dotted, ".."))
     test.assert(not slugroute.is_safe_segment(".."))
 
 @test

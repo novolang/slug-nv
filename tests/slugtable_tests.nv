@@ -1,0 +1,328 @@
+// slugtable_tests.nv — the compiled table against what
+// tools/trans_table.py wrote, the README's rules, and the pipeline's
+// promises over every named policy.
+
+use std.test
+use slugtrans
+use slugpolicy
+use slugmake
+use slugroute
+use udata
+
+// The blocks of the compiled tier, as tools/trans_table.py lists them.
+fn ranges() -> [(Int, Int)]
+    [(0x00A0, 0x024F), (0x0300, 0x036F), (0x0370, 0x03FF), (0x0400, 0x052F), (0x1E00, 0x1EFF),
+     (0x1F00, 0x1FFF), (0x2000, 0x206F), (0x20A0, 0x20CF), (0x2100, 0x214F)]
+
+@test
+fn test_the_compiled_table_is_what_the_generator_wrote() [io]
+    // tools/trans_table.py prints: 1696 characters, checksum 369917866.
+    let t = slugtrans.latin_table()
+    var count = 0
+    var checksum = 0
+    for r in ranges()
+        let (lo, hi) = r
+        for cp in lo..hi + 1
+            if let Some(text) = slugtrans.char_ascii_of(t, cp)
+                count = count + 1
+                for k in 0..str.len(text)
+                    checksum = (checksum * 31 + str.byte_at_or(text, k, 0) + cp) % 1000000007
+    test.assert_eq(count, 1696)
+    test.assert_eq(checksum, 369917866)
+    test.case("nothing outside the compiled blocks is covered")
+    test.assert(slugtrans.covers(t, 0x2150) == false)
+    test.assert(slugtrans.covers(t, 0x009F) == false)
+
+@test
+fn test_the_readme_rules_for_the_table() [io]
+    let t = slugtrans.latin_table()
+    test.case("å is aa, ø is oe, æ is ae, ß is ss")
+    test.assert_eq(slugtrans.transliterate(t, "å ø æ ß Å Ø Æ"), "aa oe ae ss Aa Oe AE")
+    test.case("Russian by BGN/PCGN without its apostrophes")
+    test.assert_eq(slugtrans.transliterate(t, "Юрий Щукин, объём, мышь"),
+        "Yuriy Shchukin, obyom, mysh")
+    test.case("№ is No, and a combining mark is covered with nothing")
+    test.assert_eq(slugtrans.char_ascii(t, 0x2116), "No")
+    test.assert(slugtrans.covers(t, 0x0301))
+    test.assert_eq(slugtrans.char_ascii(t, 0x0301), "")
+    test.case("so a decomposed é slugs as a composed one does")
+    test.assert_eq(slugmake.slugify("Cafe\u{0301}", slugpolicy.url_policy()).slug,
+        slugmake.slugify("Café", slugpolicy.url_policy()).slug)
+
+@test
+fn test_every_named_policy_answers_its_own_slug_unchanged() [io]
+    let titles = ["Hello, World!", "Rust & C++", "  spaced  ", "Æblegrød på Sjælland", "What's new?",
+                  "a_b-c.d", "Первая запись", "日本語 Novo", "🎉", "x86_64 -- v2", "Ζεύς & Ἥρα",
+                  "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho"]
+    let policies = [slugpolicy.github_policy(), slugpolicy.url_policy(), slugpolicy.unicode_policy(),
+                    slugpolicy.with_separator(slugpolicy.url_policy(), "_"),
+                    slugpolicy.with_separator(slugpolicy.github_policy(), "."),
+                    slugpolicy.with_max_len(slugpolicy.url_policy(), 12)]
+    for p in policies
+        for title in titles
+            let once = slugmake.slugify(title, p).slug
+            test.case("${title} under separator ${p.separator}")
+            test.assert(once != "")
+            if once != p.empty_fallback
+                test.assert(slugmake.is_canonical(p, once))
+
+@test
+fn test_the_policy_fields_each_change_the_output() [io]
+    let u = slugpolicy.url_policy()
+    test.case("upper case, and case kept")
+    let upper = SlugPolicy { separator: u.separator,
+        case: SlugCaseUpper,
+        mode: u.mode,
+        max_len: 0,
+        truncate: u.truncate,
+        empty_fallback: u.empty_fallback,
+        collapse_runs: true,
+        trim_separators: true,
+        expand_symbols: false }
+    test.assert_eq(slugmake.slugify("Hello World", upper).slug, "HELLO-WORLD")
+    let kept = SlugPolicy { separator: u.separator,
+        case: SlugCaseKeep,
+        mode: u.mode,
+        max_len: 0,
+        truncate: u.truncate,
+        empty_fallback: u.empty_fallback,
+        collapse_runs: true,
+        trim_separators: false,
+        expand_symbols: false }
+    test.assert_eq(slugmake.slugify("Hello World!", kept).slug, "Hello-World-")
+    test.case("an empty separator runs the words together")
+    test.assert_eq(slugmake.slugify("a b  c", slugpolicy.with_separator(u, "")).slug, "abc")
+    test.assert_eq(slugmake.tidy("a--b", slugpolicy.with_separator(u, "")), "a--b")
+    test.case("a separator of more than one character is trimmed whole")
+    test.assert_eq(slugmake.slugify("--a b--", slugpolicy.with_separator(u, "::")).slug, "a::b")
+    test.case("cluster truncation in the pipeline trims the separator it leaves")
+    let clustered = SlugPolicy { separator: "-",
+        case: SlugCaseLower,
+        mode: u.mode,
+        max_len: 11,
+        truncate: SlugTruncateCluster,
+        empty_fallback: "n-a",
+        collapse_runs: true,
+        trim_separators: true,
+        expand_symbols: false }
+    test.assert_eq(slugmake.slugify("alpha beta gamma", clustered).slug, "alpha-beta")
+    test.case("a single word longer than the limit is cut at the limit")
+    test.assert_eq(slugmake.truncate_at("supercalifragilistic", 5, SlugTruncateWord, "-"), "super")
+    test.assert_eq(slugmake.truncate_at("alpha-beta", 5, SlugTruncateWord, "-"), "alpha")
+    test.assert_eq(slugmake.truncate_at("alpha-beta", 5, SlugTruncateWord, ""), "alpha")
+    test.assert_eq(slugmake.truncate_at("short", 0, SlugTruncateWord, "-"), "short")
+    test.assert_eq(slugmake.truncate_at("alpha--beta", 6, SlugTruncateWord, "-"), "alpha")
+    test.case("a Unicode slug is truncated in grapheme clusters")
+    test.assert_eq(slugmake.truncate_at("καλημέρα-κόσμε", 9, SlugTruncateWord, "-"),
+        "καλημέρα")
+    test.assert_eq(slugmake.truncate_at("καλημέρα", 3, SlugTruncateCluster, "-"), "καλ")
+    test.case("the comparison of policies ignores what cannot matter")
+    let no_limit_word = slugpolicy.with_max_len(u, 0)
+    let no_limit_cluster = SlugPolicy { separator: "-",
+        case: SlugCaseLower,
+        mode: u.mode,
+        max_len: 0,
+        truncate: SlugTruncateCluster,
+        empty_fallback: "n-a",
+        collapse_runs: true,
+        trim_separators: true,
+        expand_symbols: true }
+    test.assert(slugpolicy.same_output(no_limit_word, no_limit_cluster))
+    test.assert(slugpolicy.same_output(slugpolicy.with_separator(slugpolicy.github_policy(), ""), slugpolicy.with_separator(u, "")) == false)
+    test.assert(slugpolicy.same_output(u, upper) == false)
+    test.assert(slugpolicy.same_output(kept, kept))
+    test.assert(slugpolicy.same_output(clustered, clustered))
+    test.assert(slugpolicy.same_output(clustered, slugpolicy.with_max_len(u, 11)) == false)
+    test.assert(slugpolicy.same_output(u, slugpolicy.unicode_policy()) == false)
+
+@test
+fn test_symbols_and_languages() [io]
+    let t = slugtrans.latin_table()
+    test.case("every language list has the ampersand, and a region subtag is ignored")
+    for lang in ["en", "de", "fr", "es", "da", "DE-at"]
+        test.assert(list.any(slugtrans.word_substitutions_for(lang), w => w.0 == '&'))
+    test.assert_eq(slugmake.slugify_with_words("100% & more", slugpolicy.url_policy(), t, slugtrans.word_substitutions_for("es")).slug,
+        "100-por-ciento-y-more")
+    test.case("an empty title needs attention for its one note, and dropped nothing")
+    let empty = slugmake.slugify("", slugpolicy.url_policy())
+    test.assert(slugmake.needs_attention(empty))
+    test.assert_eq(slugmake.dropped_count(slugmake.slugify("Café", slugpolicy.url_policy())), 0)
+    test.case("the expansion is counted in a note")
+    let o = slugmake.slugify("A & B @ C", slugpolicy.url_policy())
+    test.assert(list.any(o.notes, n => is_expanded(n, 2)))
+    test.case("words are not applied when the policy does not expand")
+    test.assert_eq(slugmake.slugify_with_words("a & b", slugpolicy.github_policy(), t, slugtrans.word_substitutions()).slug,
+        "a--b")
+    test.case("a symbol with no word under GitHub's rule is removed, and a dropped character too")
+    test.assert_eq(slugmake.slugify("a日b", slugpolicy.github_policy()).slug, "ab")
+    test.assert_eq(slugmake.slugify("a日b", slugpolicy.url_policy()).slug, "a-b")
+
+fn is_expanded(n: SlugNote, count: Int) -> Bool
+    match n
+        SlugNoteExpanded(c) => c == count
+        _                   => false
+
+@test
+fn test_the_unicode_mode_without_and_with_its_tables() [io]
+    test.case("slugify keeps letters in any script under the unicode policy, lowering only ASCII")
+    test.assert_eq(slugmake.slugify("Hello Мир", slugpolicy.unicode_policy()).slug, "hello-Мир")
+    test.case("slugify_unicode lowers, normalises, and reads its policy as unicode")
+    let d = udata.data_full()
+    test.assert_eq(slugmake.slugify_unicode("Hello Мир", slugpolicy.url_policy(), d).slug, "hello-мир")
+    test.assert_eq(slugmake.slugify_unicode("Cafe\u{0301}", slugpolicy.unicode_policy(), d).slug, "café")
+    let upper = SlugPolicy { separator: "-",
+        case: SlugCaseUpper,
+        mode: SlugModeUnicode,
+        max_len: 0,
+        truncate: SlugTruncateWord,
+        empty_fallback: "n-a",
+        collapse_runs: true,
+        trim_separators: true,
+        expand_symbols: false }
+    test.assert_eq(slugmake.slugify_unicode("straße", upper, d).slug, "STRASSE")
+    test.assert_eq(slugmake.slugify("straße", upper).slug, "STRAßE")
+
+@test
+fn test_the_table_blob_round_trips_and_refuses_what_it_is_not() [io]
+    let kana = SlugTable { scripts: [SlugScriptKana],
+        name: "kana",
+        entries: [(0x3042, "a"), (0x3044, "i"), (0x65E5, "ri")] }
+    var out: [u8] = []
+    let blob = slugtrans.pack_bytes(out, kana)
+    match slugtrans.table_from_bytes(blob)
+        None    => test.fail("what pack_bytes wrote reads back")
+        Some(t) =>
+            test.assert_eq(t.name, "kana")
+            test.assert(slugtrans.covers(t, 0x3042))
+            test.assert(slugtrans.covers(t, 0x00E9))
+            test.assert_eq(slugmake.slugify_with("あい Novo", slugpolicy.url_policy(), t).slug, "ai-novo")
+            test.assert_eq(slugtrans.char_ascii(t, 0x65E5), "ri")
+            test.assert_eq(slugtrans.char_ascii(t, 0x3043), "")
+    test.case("every script round-trips through its code")
+    let all = SlugTable { scripts: [SlugScriptAscii,
+        SlugScriptLatin,
+        SlugScriptGreek,
+        SlugScriptCyrillic,
+        SlugScriptHebrew,
+        SlugScriptArabic,
+        SlugScriptDevanagari,
+        SlugScriptCaucasus,
+        SlugScriptThai,
+        SlugScriptKana,
+        SlugScriptHan,
+        SlugScriptNone],
+    name: "all", entries: [] }
+    var buffer: [u8] = []
+    match slugtrans.table_from_bytes(slugtrans.pack_bytes(buffer, all))
+        None    => test.fail("every script has a code")
+        Some(t) => test.assert_eq(list.len(t.scripts), 12)
+    test.case("a truncated blob, a bad script code, entries out of order, and trailing bytes")
+    test.assert(slugtrans.table_from_bytes(blob[0:12]) == None)
+    test.assert(slugtrans.table_from_bytes(blob[0:list.len(blob) - 1]) == None)
+    var trailing = blob[:]
+    list.push(trailing, 0 as u8)
+    test.assert(slugtrans.table_from_bytes(trailing) == None)
+    var bad_script = blob[:]
+    bad_script[14] = 99 as u8
+    test.assert(slugtrans.table_from_bytes(bad_script) == None)
+    let unordered = SlugTable { scripts: [], name: "x", entries: [(0x3044, "i"), (0x3042, "a")] }
+    var o2: [u8] = []
+    test.assert(slugtrans.table_from_bytes(slugtrans.pack_bytes(o2, unordered)) == None)
+    let short_name: [u8] = ['S' as u8,
+        'L' as u8,
+        'U' as u8,
+        'G' as u8,
+        'T' as u8,
+        '1' as u8,
+        0 as u8,
+        200 as u8,
+        0 as u8,
+        0 as u8,
+        0 as u8,
+        0 as u8]
+    test.assert(slugtrans.table_from_bytes(short_name) == None)
+    let few_scripts: [u8] = ['S' as u8,
+        'L' as u8,
+        'U' as u8,
+        'G' as u8,
+        'T' as u8,
+        '1' as u8,
+        0 as u8,
+        0 as u8,
+        0 as u8,
+        9 as u8,
+        0 as u8,
+        0 as u8]
+    test.assert(slugtrans.table_from_bytes(few_scripts) == None)
+    let cut_entry: [u8] = ['S' as u8,
+        'L' as u8,
+        'U' as u8,
+        'G' as u8,
+        'T' as u8,
+        '1' as u8,
+        0 as u8,
+        0 as u8,
+        0 as u8,
+        0 as u8,
+        0 as u8,
+        0 as u8,
+        0 as u8,
+        1 as u8,
+        0 as u8]
+    test.assert(slugtrans.table_from_bytes(cut_entry) == None)
+
+@test
+fn test_script_of_every_tier() [io]
+    let samples = [(0x05D0, 4),
+        (0x0627, 5),
+        (0x0915, 6),
+        (0x0561, 7),
+        (0x10D0, 7),
+        (0x0E01, 8),
+        (0x30A2, 9),
+        (0x4E2D, 10),
+        (0x2603, 11),
+        (0x0416, 3),
+        (0x03A9, 2),
+        (0x1E9E, 1)]
+    for s in samples
+        let (ch, code) = s
+        test.case("U+${ch}")
+        test.assert_eq(script_number(slugtrans.script_of(ch)), code)
+        test.assert_eq(slugtrans.script_is_compiled(slugtrans.script_of(ch)), code <= 3)
+    test.assert(slugtrans.script_is_compiled(SlugScriptAscii))
+
+fn script_number(s: SlugScript) -> Int
+    match s
+        SlugScriptAscii      => 0
+        SlugScriptLatin      => 1
+        SlugScriptGreek      => 2
+        SlugScriptCyrillic   => 3
+        SlugScriptHebrew     => 4
+        SlugScriptArabic     => 5
+        SlugScriptDevanagari => 6
+        SlugScriptCaucasus   => 7
+        SlugScriptThai       => 8
+        SlugScriptKana       => 9
+        SlugScriptHan        => 10
+        SlugScriptNone       => 11
+
+@test
+fn test_the_walker_and_the_route_helpers() [io]
+    test.case("a byte that starts no well-formed sequence is walked as itself")
+    test.assert_eq(slugtrans.char_width("a\xC3", 1), 1)
+    test.assert_eq(slugtrans.char_at("\u{1F389}", 0), 0x1F389)
+    test.assert_eq(slugtrans.char_width("\u{1F389}", 0), 4)
+    test.assert_eq(slugtrans.char_width("\xFF", 0), 1)
+    test.case("split_suffix refuses what is not a suffix")
+    test.assert(slugroute.split_suffix("intro-02", "-") == ("intro-02", 0))
+    test.assert(slugroute.split_suffix("intro-1", "-") == ("intro-1", 0))
+    test.assert(slugroute.split_suffix("intro-", "-") == ("intro-", 0))
+    test.assert(slugroute.split_suffix("intro-x2", "-") == ("intro-x2", 0))
+    test.assert(slugroute.split_suffix("intro2", "") == ("intro2", 0))
+    test.assert(slugroute.split_suffix("a-b-999", "-") == ("a-b", 999))
+    test.case("a Unicode slug and the sub-delimiters are safe segments, a space is not")
+    test.assert(slugroute.is_safe_segment("первая-запись"))
+    test.assert(slugroute.is_safe_segment("a+b=c@d"))
+    test.assert(slugroute.is_safe_segment("a b") == false)
+    test.assert(slugroute.collides_on_case("intro", "intro") == false)

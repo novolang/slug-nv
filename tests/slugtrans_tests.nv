@@ -1,18 +1,9 @@
 // slugtrans_tests.nv — the table, the tiers, and the policies.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: slug-nv.<module>.<fn>`.
-//
-// THE VECTORS ARE `deunicode`'s, which are `Text::Unidecode`'s: the
-// same character-to-ASCII answers, so a port can be checked against
-// the reference rather than against what looks reasonable. The tier
-// cases are this package's own, because the split is this package's
-// own decision.
-//
-// THE ASSERTION THIS SUITE EXISTS FOR: a caller can ask, BEFORE
-// trusting a slug, whether the loaded table covers the script the
-// title is in. A romanisation nobody asked for is worse than a
-// reported gap.
+// The character answers are the compiled table's, which are deunicode's
+// with the overrides tools/trans_table.py names.  The suite asserts
+// that a caller can ask, before trusting a slug, whether the loaded
+// table covers the script a title is in.
 
 use std.test
 use std.list
@@ -31,7 +22,7 @@ fn test_the_compiled_tier_is_the_european_alphabets_and_says_so() [io]
     test.assert(slugtrans.covers(t, 0x03B1))
     test.assert(slugtrans.covers(t, 0x0416))
 
-    test.case("Kana and Han are NOT")
+    test.case("Kana and Han are not")
     test.assert(not slugtrans.covers(t, 0x3042))
     test.assert(not slugtrans.covers(t, 0x65E5))
 
@@ -45,7 +36,7 @@ fn test_script_of_answers_the_tier_question_rather_than_the_unicode_one() [io]
         SlugScriptAscii => test.assert(true)
         _               => test.assert(false)
 
-    test.case("Latin-1 Supplement and Latin Extended-A are ONE answer — two blocks, one tier")
+    test.case("Latin-1 Supplement and Latin Extended-A are one answer: two blocks, one tier")
     match slugtrans.script_of(0x00E9)
         SlugScriptLatin => test.assert(true)
         _               => test.assert(false)
@@ -96,7 +87,7 @@ fn test_transliteration_alone_is_published_for_callers_that_want_no_slug() [io]
     test.assert(slugtrans.uncovered_count(t, "Café") == 0)
 
     test.case("the buffer form appends")
-    let seed: [u8] = [62]
+    var seed: [u8] = [62]
     let out = slugtrans.transliterate_into(seed, t, "Café")
     test.assert(out[0] == 62)
     test.assert(list.len(out) > 1)
@@ -108,7 +99,7 @@ fn test_the_extended_table_arrives_as_bytes_because_a_core_package_reads_nothing
     test.assert(slugtrans.table_from_bytes(junk) == None)
 
     test.case("what pack_bytes wrote, table_from_bytes reads back")
-    let empty: [u8] = []
+    var empty: [u8] = []
     let blob = slugtrans.pack_bytes(empty, slugtrans.latin_table())
     match slugtrans.table_from_bytes(blob)
         None    => test.assert(false)
@@ -125,7 +116,7 @@ fn test_the_symbol_words_are_data_because_they_are_a_language_decision() [io]
             saw = pair.1
     test.assert(saw == "and")
 
-    test.case("the German list has it as `und` — which is why this is not in the table")
+    test.case("the German list has it as `und`, which is why this is not in the table")
     var de_word = ""
     for pair in slugtrans.word_substitutions_for("de")
         if pair.0 == 38
@@ -152,7 +143,7 @@ fn test_the_named_policies_differ_in_the_fields_they_claim_to() [io]
         SlugCaseLower => test.assert(true)
         _             => test.assert(false)
 
-    test.case("github has no length limit and no symbol expansion — because GitHub has neither")
+    test.case("github has no length limit and no symbol expansion, because GitHub has neither")
     test.assert(gh.max_len == 0)
     test.assert(not gh.expand_symbols)
 
@@ -168,7 +159,7 @@ fn test_the_named_policies_differ_in_the_fields_they_claim_to() [io]
         SlugModeAscii => test.assert(true)
         _             => test.assert(false)
 
-    test.case("NO POLICY HAS AN EMPTY FALLBACK OF \"\" — the whole design")
+    test.case("no policy has an empty fallback")
     test.assert(gh.empty_fallback != "")
     test.assert(urlp.empty_fallback != "")
     test.assert(uni.empty_fallback != "")
@@ -183,7 +174,7 @@ fn test_a_policy_can_be_compared_before_a_migration_moves_every_url() [io]
     test.case("a different separator is a different output")
     test.assert(not slugpolicy.same_output(urlp, slugpolicy.with_separator(urlp, "_")))
 
-    test.case("a limit longer than any input and no limit agree")
+    test.case("two policies with no limit agree")
     test.assert(slugpolicy.same_output(slugpolicy.with_max_len(urlp, 0),
                                        slugpolicy.with_max_len(urlp, 0)))
 
