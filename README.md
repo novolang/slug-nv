@@ -5,16 +5,10 @@ A slug is the human-readable part of a URL: the `hello-world` in
 that is safe in a path, readable, and different from every other slug
 the site already serves. This package does that for novo-lang. The
 transliteration answers come from
-[`deunicode`](https://docs.rs/deunicode) and Perl's
-[`Text::Unidecode`](https://metacpan.org/pod/Text::Unidecode) behind it,
-and the anchor algorithm is GitHub's. It is built on
+[`deunicode`](https://docs.rs/deunicode), itself derived from Perl's
+[`Text::Unidecode`](https://metacpan.org/pod/Text::Unidecode), and the
+heading-anchor rule is GitHub's. It is built on
 [unicode-nv](https://novo-lang.org/packages/unicode-nv).
-
-**Status: NOT IMPLEMENTED — interface only.** Every function is declared
-with its full signature, but every body is a `todo()` that panics when
-called. The package is published so its design can be reviewed and
-depended on before it is implemented. Version 0.1.0 will be the first
-working release.
 
 ## What it is
 
@@ -81,10 +75,7 @@ fn main() [io]
     println(resolved.slug)
 ```
 
-Build and test with `novo pkg build` and `novo test`. Today `novo test`
-fails on purpose: every test reaches a
-`not implemented: slug-nv.<module>.<fn>` panic. The tests are the
-specification the implementation will have to satisfy.
+Build and test with `novo pkg build` and `novo test`.
 
 ## What the package contains
 
@@ -118,9 +109,11 @@ Use it with `slugtrans.table_from_bytes` when the compiled-in Latin
 table is not enough.
 
 **`slugpolicy.github_policy()` is a compatibility claim, not a
-preference.** Use it for heading anchors, so a table of contents and a
-renderer agree. `url_policy()` is that plus a length limit and symbol
-expansion, for permalinks. `unicode_policy()` keeps non-ASCII letters.
+preference.** Use it for heading anchors, so a table of contents
+computes the fragment GitHub renders for an ASCII heading.
+`url_policy()` collapses every run of punctuation to one hyphen, trims
+the ends, limits the length and expands symbols, for permalinks.
+`unicode_policy()` keeps non-ASCII letters.
 
 ## The rules a user needs
 
@@ -144,17 +137,24 @@ expansion, for permalinks. `unicode_policy()` keeps non-ASCII letters.
    says so.
 5. **The second occurrence is numbered `-2`, not `-1`.** The first
    carries no suffix, so a `-1` would imply a `-0` somewhere. This is
-   GitHub's numbering and this project's site generator's.
-   `SlugResolved.suffix` is 0 when nothing collided.
+   the numbering of the novo-lang Markdown renderer's heading anchors.
+   GitHub's renderer numbers duplicates from `-1`.
+   `SlugResolved.suffix` is 0 when nothing collided, and
+   `slugroute.split_suffix` reads a suffix of 2 to 999 back.
 6. **A character maps to a string, not to a character.** `ß` is `ss`,
    `æ` is `ae`, `Ю` is `Yu`, `№` is `No`. A table mapping character to
-   character would have had to drop all four.
+   character would have had to drop all four. The answers are
+   deunicode's, except that Danish and Norwegian `å` and `ø` are `aa`
+   and `oe`, Russian follows the BGN/PCGN romanisation without its
+   diacritics and apostrophes, and `№` is `No`.
 7. **The transliteration table is tiered.** `latin_table()` is compiled
    in and covers the European alphabets. `table_from_bytes` takes the
    rest as bytes the host read, which is how a `core` package reaches
    a large table without performing any input. `slugtrans.covers`
    answers whether a given table knows a character, and
-   `uncovered_count` answers how much of a title it would drop.
+   `uncovered_count` answers how much of a title it would drop. A
+   loaded table answers from its own entries first and from the
+   compiled tier after.
 8. **Only `slugify_unicode` takes a `UniData`.** The signature is the
    disclosure that NFC normalisation and non-ASCII case mapping cost
    the 245 KB Unicode table. The ASCII path uses this package's own
@@ -179,13 +179,23 @@ expansion, for permalinks. `unicode_policy()` keeps non-ASCII letters.
     that `max_len` does not model.
     [punycode-nv](https://novo-lang.org/packages/punycode-nv)'s
     `punyidna.host_to_ascii` is the wire form for a hostname.
-13. **`slugpolicy.is_canonical` checks that a string is already what a
+13. **`slugmake.is_canonical` checks that a string is already what a
     policy would produce.** It is how a compatibility claim becomes a
-    test rather than a comment. `same_output` compares two policies.
+    test rather than a comment. `slugpolicy.same_output` compares two
+    policies. A slug is its own slug under the policy that made it.
 14. **`slugroute.collides_on_case` answers whether two slugs differ
     only by case.** A path is case-sensitive on most servers and
     case-insensitive in most people's heads, which is why every named
     policy lowercases.
+15. **`SlugPolicy.collapse_runs` chooses between two punctuation
+    rules.** On, every run of characters that are not letters or digits
+    becomes one separator: `Rust & C++` is `rust-c`. Off is GitHub's
+    rule: each space is one separator, a hyphen and an underscore are
+    kept, and other punctuation is removed, so `Rust & C++` is
+    `rust--c`.
+16. **Only `slugify_unicode` lowers a letter outside ASCII.** `slugify`
+    under `unicode_policy()` keeps the letters of any script but has no
+    case tables, so `Мир` stays `Мир`.
 
 ## What is not included
 
@@ -225,50 +235,34 @@ expansion, for permalinks. `unicode_policy()` keeps non-ASCII letters.
 
 ## Tests
 
-The references are `deunicode` and `Text::Unidecode` behind it for the
-transliteration answers, `python-slugify` and the Rust `slug` crate for
-the pipeline and its test suite, and GitHub's heading-anchor algorithm
-for `github_policy` and the duplicate numbering. Where the references
-disagree, the test case names the one this package follows.
-
 ```bash
-novo test tests/slugtrans_tests.nv   #  8 tests: the table, its tiers and its scripts
-novo test tests/slugmake_tests.nv    # 11 tests: the pipeline and every note
-novo test tests/slugroute_tests.nv   #  7 tests: reserved words, collisions, numbering
+novo test tests/slugtrans_tests.nv      # the table, its tiers and its scripts
+novo test tests/slugmake_tests.nv       # the pipeline and every note
+novo test tests/slugroute_tests.nv      # reserved words, collisions, numbering
+novo test tests/slugtable_tests.nv      # the compiled table, the README's rules, every policy field
+novo test tests/differential_tests.nv   # 305 titles against python-slugify
+bash tests/coverage.sh                  # line coverage over src/, merged across the suites
 ```
 
-The suite asserts that an all-emoji title answers the fallback rather
-than the empty string, that a title partly outside the table reports
-how much was dropped, that `ß` becomes `ss` rather than being dropped,
-that a truncation cuts at a word boundary and keeps the full slug in
-its note, that the second collision is numbered 2, that a reserved word
-is refused before a collision is checked, and that
-`github_policy()` output is canonical under itself.
+The references are deunicode for the transliteration answers,
+python-slugify for the pipeline, and GitHub's heading-anchor rule for
+`github_policy`. The suites check these things:
 
-The tests compile today and fail at run, each on the
-`not implemented: slug-nv.<module>.<fn>` panic that is its body. That
-is the expected state of an interface release. They turn green one at a
-time as bodies land.
-
-## Implementation status
-
-Nothing is implemented. The table lists the surface an implementation
-has to fill.
-
-| Item | Implemented |
-| --- | --- |
-| `slugpolicy.github_policy`, `.url_policy`, `.unicode_policy` | no |
-| `slugpolicy.with_separator`, `.with_max_len`, `.same_output`, `.is_canonical` | no |
-| `slugtrans.latin_table`, `.table_from_bytes`, `.pack_bytes`, `.covers` | no |
-| `slugtrans.script_of`, `.script_is_compiled`, `.uncovered_count` | no |
-| `slugtrans.char_ascii`, `.transliterate`, `.transliterate_into` | no |
-| `slugtrans.word_substitutions`, `.word_substitutions_for` | no |
-| `slugmake.slugify`, `.slugify_with`, `.slugify_with_words`, `.slugify_unicode`, `.slugify_into` | no |
-| `slugmake.is_clean`, `.needs_attention`, `.dropped_count` | no |
-| `slugmake.truncate_at`, `.tidy`, `.join` | no |
-| `slugroute.resolve`, `.resolve_with`, `.number_in_order` | no |
-| `slugroute.unique`, `.unique_numbered`, `.split_suffix` | no |
-| `slugroute.common_reserved`, `.reserved_in`, `.is_safe_segment`, `.collides_on_case` | no |
+- The compiled table holds the 1,696 answers `tools/trans_table.py`
+  wrote from deunicode 1.6.0 and its overrides, checked by count and
+  checksum, and the README's own examples: `å` is `aa`, `ß` is `ss`,
+  `Ю` is `Yu`, `№` is `No`.
+- 305 titles, five of them the examples in python-slugify's README and
+  the rest seeded titles whose every character has the same answer in
+  both tables, give python-slugify's slug under `url_policy()` without
+  its symbol expansion and length limit. `tools/differential.py`
+  writes that suite.
+- Every named policy answers its own slug unchanged, an all-emoji title
+  answers the fallback rather than the empty string, a title partly
+  outside the table reports how much was dropped, a truncation cuts at
+  a word boundary and keeps the full slug in its note, the second
+  collision is numbered 2, and a reserved word is refused before a
+  collision is checked.
 
 ## Licence
 

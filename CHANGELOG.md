@@ -5,6 +5,43 @@ All notable changes to slug-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.1.0 — 2026-09-27
+
+The first implementation of the interface published as 0.0.2.
+
+### Added
+
+- The compiled transliteration table: 1,696 answers from deunicode
+  1.6.0 for Latin, Greek, Cyrillic, the combining marks, general
+  punctuation, the currency signs and the letterlike symbols, written
+  by `tools/trans_table.py`. Danish and Norwegian `å` and `ø` are `aa`
+  and `oe`, Russian follows the BGN/PCGN romanisation without its
+  diacritics and apostrophes, and `№` is `No`.
+- The pipeline, the notes, the truncation at a word or a cluster, the
+  numbering from `-2`, and the serialised table form `SLUGT1`.
+- `slugtrans.char_ascii_of`, which tells an uncovered character from a
+  covered one whose answer is empty, and `slugtrans.char_at` and
+  `slugtrans.char_width`, the codepoint walk the table is keyed by.
+- `tools/differential.py`, which writes a suite of 305 titles checked
+  against python-slugify, and a suite for the compiled table.
+
+### Changed
+
+- `SlugTable` gains `entries: [(Int, Str)]`, the table's own answers.
+  A table built from bytes has nowhere else to keep them.
+- `slugpolicy.is_canonical` moves to `slugmake.is_canonical`. It runs
+  the pipeline, and `slugmake` already depends on `slugpolicy`.
+- `slugtrans.transliterate_into`, `slugtrans.pack_bytes` and
+  `slugmake.slugify_into` take the buffer as `var out`. They write into
+  the caller's buffer, as unicode-nv 0.1.3's appending functions do.
+- `github_policy()` sets `collapse_runs` to false, and `collapse_runs`
+  is documented as the choice between GitHub's punctuation rule and
+  one separator per run. The documentation no longer says that
+  `github_policy()` matches the novo-lang renderer, whose rule
+  collapses runs.
+- The dependency is unicode-nv `^0.1.3`, and the toolchain floor is
+  0.13.0.
+
 ## 0.0.2 — 2026-09-15
 
 README rewritten to the package README style guide (docs/writing-a-readme.md); no change to the interface.
