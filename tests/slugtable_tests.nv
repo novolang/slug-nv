@@ -106,6 +106,17 @@ fn test_the_policy_fields_each_change_the_output() [io]
         trim_separators: true,
         expand_symbols: false }
     test.assert_eq(slugmake.slugify("alpha beta gamma", clustered).slug, "alpha-beta")
+    test.case("a limit with the ends left untrimmed")
+    let untrimmed = SlugPolicy { separator: "-",
+        case: SlugCaseLower,
+        mode: u.mode,
+        max_len: 6,
+        truncate: SlugTruncateCluster,
+        empty_fallback: "n-a",
+        collapse_runs: true,
+        trim_separators: false,
+        expand_symbols: false }
+    test.assert_eq(slugmake.slugify("alpha beta", untrimmed).slug, "alpha-")
     test.case("a single word longer than the limit is cut at the limit")
     test.assert_eq(slugmake.truncate_at("supercalifragilistic", 5, SlugTruncateWord, "-"), "super")
     test.assert_eq(slugmake.truncate_at("alpha-beta", 5, SlugTruncateWord, "-"), "alpha")
