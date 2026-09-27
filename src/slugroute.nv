@@ -1,41 +1,24 @@
 // slugroute.nv — the two facts a slug generator cannot know, and the
-// shape that asks for them.
+// calls that ask for them.
 //
-// Every body here is a `todo()`; the signatures are the design.
+// A slug is not a function of the title alone.  Two facts are missing,
+// and both live in a database this package cannot reach.
 //
-// A SLUG IS NOT A FUNCTION OF THE TITLE ALONE, and every library that
-// pretends otherwise pushes the rest into its caller, where it is
-// written once per project and wrongly at least once.
+// A slug is reserved when the route table already mounts that word:
+// `/new`, `/edit`, `/admin`, `/api`, `/login`, `/sitemap.xml`, and
+// whatever else the application mounted.  A post titled "New" slugs to
+// `new`, the router matches the literal route first, and the post is
+// unreachable.  A slug is taken when another page already has it:
+// `Hello, World!` and `hello world` both give `hello-world`.  Both
+// facts arrive as `fn(Str) -> Bool` predicates the caller supplies,
+// because a list this package shipped would be stale the day it
+// published and wrong for every application that mounted one more
+// route.
 //
-// Two facts are missing, and both live in a database this package
-// cannot reach:
-//
-//   RESERVED. A route table has words that are not posts. `/new`,
-//   `/edit`, `/admin`, `/api`, `/login` — and `/sitemap.xml`, and
-//   whatever else that particular application mounted. A post titled
-//   "New" slugs to `new`, the route table matches the literal route
-//   first, and the post is unreachable for the life of the site. The
-//   set is the application's, so it arrives as a predicate.
-//
-//   TAKEN. Two titles slugify to one slug routinely: `Hello, World!`
-//   and `hello world` both give `hello-world`, and so do a post and
-//   its own translation. A generator that ignores that overwrites a
-//   page. Whether a slug is taken is a query, so it arrives as a
-//   predicate too.
-//
-// BOTH ARE NAMED FUNCTIONS, NOT VALUES. `fn(Str) -> Bool` is the type,
-// and a caller passes a named function rather than a lambda — the same
-// shape cookie-nv uses for the Public Suffix List, and for the same
-// reason: the answer lives in the caller's own world, and a list this
-// package shipped would be stale the day it published and wrong for
-// every application that mounted one more route.
-//
-// THE SUFFIX RULE IS THE SITE GENERATOR'S. A colliding slug takes
-// `-2`, then `-3`, and so on — the second occurrence is `-2` and not
-// `-1`, because the first one has no suffix at all and `-1` implies a
-// `-0` somewhere. That is what GitHub does to duplicate heading
-// anchors and what this project's own site generator does, and a table
-// of contents that numbered differently would produce dead links.
+// A colliding slug takes `-2`, then `-3`, and so on.  The second
+// occurrence is `-2` rather than `-1`, because the first has no suffix
+// and a `-1` would imply a `-0`.  This is the numbering the project's
+// Markdown renderer gives duplicate heading anchors.
 
 use slugmake
 use slugpolicy
@@ -50,8 +33,8 @@ pub struct SlugResolved
     // The slug before the route table touched it — equal to `slug`
     // when nothing collided. Kept so a log line can say what moved.
     proposed: Str
-    // The suffix that was appended, or 0 when none was. Two and
-    // upwards; see the module comment on why not one.
+    // The suffix that was appended, or 0 when none was.  Two and
+    // upwards, since the first occurrence has none.
     suffix: Int
     // True when `proposed` was refused because a predicate called it
     // reserved rather than because something already had it.
@@ -70,8 +53,10 @@ pub alias SlugTakenFn = fn(Str) -> Bool
 
 // Slug a title and make it fit a route table.
 //
-// THE CALL A SITE GENERATOR MAKES. Everything else in this package is
-// a piece of it.
+// The call a site generator makes; everything else in this package is
+// a piece of it.  The slug is made first.  When `reserved` or `taken`
+// says it cannot be used, it is numbered from `-2` until neither does,
+// and `was_reserved` says whether the reserved word was the reason.
 //
 // ```novo
 // use slugpolicy
@@ -89,12 +74,31 @@ pub alias SlugTakenFn = fn(Str) -> Bool
 // ```
 pub fn resolve(title: Str, p: slugpolicy.SlugPolicy, reserved: SlugReservedFn,
                taken: SlugTakenFn) -> SlugResolved []
-    todo("slug-nv.slugroute.resolve")
+    resolve_with(title, p, slugtrans.latin_table(), reserved, taken)
 
 // The same, with a table the caller loaded.
+//
+// ```novo
+// use slugpolicy
+// use slugroute
+// use slugtrans
+//
+// fn free(s: Str) -> Bool
+//     false
+//
+// fn main() [io]
+//     println(slugroute.resolve_with("Café", slugpolicy.url_policy(), slugtrans.latin_table(), free, free).slug)   // cafe
+// ```
 pub fn resolve_with(title: Str, p: slugpolicy.SlugPolicy, t: slugtrans.SlugTable,
                     reserved: SlugReservedFn, taken: SlugTakenFn) -> SlugResolved []
-    todo("slug-nv.slugroute.resolve_with")
+    let o = slugmake.slugify_with(title, p, t)
+    let was_reserved = reserved(o.slug)
+    let (slug, suffix) = numbered(o.slug, p.separator, reserved, taken)
+    SlugResolved { slug: slug,
+        notes: o.notes[:],
+        proposed: o.slug,
+        suffix: suffix,
+        was_reserved: was_reserved }
 
 // Make an already-built slug unique against `taken`, without slugging
 // anything.
@@ -113,31 +117,57 @@ pub fn resolve_with(title: Str, p: slugpolicy.SlugPolicy, t: slugtrans.SlugTable
 //     println(slugroute.unique("intro", "-", taken))   // intro-2
 // ```
 pub fn unique(slug: Str, separator: Str, taken: SlugTakenFn) -> Str []
-    todo("slug-nv.slugroute.unique")
+    let (unique_slug, _) = unique_numbered(slug, separator, taken)
+    unique_slug
 
-// The same, answering which suffix it used — 0 when none was needed —
-// so a caller can log that a title collided rather than discovering it
+// The same, answering which suffix it used, 0 when none was needed, so
+// a caller can log that a title collided rather than discovering it
 // from the URL.
+//
+// ```novo
+// use slugroute
+//
+// fn taken(s: Str) -> Bool
+//     s == "intro"
+//
+// fn main() [io]
+//     println("${slugroute.unique_numbered("intro", "-", taken).1}")   // 2
+// ```
 pub fn unique_numbered(slug: Str, separator: Str, taken: SlugTakenFn) -> (Str, Int) []
-    todo("slug-nv.slugroute.unique_numbered")
+    numbered(slug, separator, never, taken)
 
 // The base slug and the suffix a numbered slug was built from:
 // `("intro", 2)` for `intro-2`, and `("intro", 0)` for `intro`.
 //
-// The inverse of `unique`, for a caller reading a slug back — a
+// The inverse of `unique`, for a caller reading a slug back, such as a
 // redirect table deciding whether `intro-2` and `intro` are the same
-// post, an importer rebuilding its numbering.
+// post.  A suffix is the separator and a number from 2 to 999 without
+// a leading zero, so `novo-2026` ends in a year rather than a suffix.
+//
+// ```novo
+// use slugroute
+//
+// println("${slugroute.split_suffix("intro-2", "-").1}")   // 2
+// ```
 pub fn split_suffix(slug: Str, separator: Str) -> (Str, Int) []
-    todo("slug-nv.slugroute.split_suffix")
+    if separator == ""
+        return (slug, 0)
+    let Some(at) = last_index(slug, separator) else return (slug, 0)
+    let digits = str.slice(slug, at + str.len(separator), str.len(slug))
+    let n = str.len(digits)
+    if n == 0 or n > 3 or str.byte_at_or(digits, 0, 0) == '0' or not list.all(list.range(0, n), i => is_digit(str.byte_at_or(digits, i, 0)))
+        return (slug, 0)
+    let value = str.to_int(digits) ?? 0
+    if value < 2
+        return (slug, 0)
+    (str.slice(slug, 0, at), value)
 
 // Slug a sequence of titles against each other, the way a table of
 // contents does: each one made unique against the ones before it, in
 // document order.
 //
 // A separate call because the `taken` predicate for this case is the
-// list itself, and a caller writing the loop has to keep that list —
-// which is exactly the loop the site generator wrote by hand, with its
-// own `seen` array.
+// list itself, and a caller writing the loop would have to keep it.
 //
 // ```novo
 // use slugpolicy
@@ -148,7 +178,18 @@ pub fn split_suffix(slug: Str, separator: Str) -> (Str, Int) []
 //     println(s)
 // ```
 pub fn number_in_order(titles: [Str], p: slugpolicy.SlugPolicy) -> [Str] []
-    todo("slug-nv.slugroute.number_in_order")
+    var seen: [Str] = []
+    for title in titles
+        let base = slugmake.slugify(title, p).slug
+        var slug = base
+        var k = 2
+        for _ in 0..list.len(seen) + 1
+            if not list.contains(seen, slug)
+                break
+            slug = base + p.separator + str.from_int(k)
+            k = k + 1
+        list.push(seen, slug)
+    seen
 
 // The route words a web application almost always has, as a list a
 // caller can start from: `new`, `edit`, `delete`, `admin`, `api`,
@@ -156,30 +197,71 @@ pub fn number_in_order(titles: [Str], p: slugpolicy.SlugPolicy) -> [Str] []
 // `rss`, `sitemap`, `robots`, `index`, `about`, `null`, `undefined`,
 // `true`, `false`.
 //
-// A STARTING POINT AND NOT THE ANSWER, and the doc comment is where
-// that is said rather than the name: the real set is whatever the
+// A starting point and not the answer: the real set is whatever the
 // application mounted, this package cannot know it, and a caller that
 // used this list alone will still collide the first time somebody adds
-// a route. `reserved_in` turns it into a predicate for the caller that
+// a route.  `reserved_in` turns it into a predicate for the caller that
 // wants exactly this.
+//
+// ```novo
+// use slugroute
+//
+// println("${list.len(slugroute.common_reserved())}")   // 21
+// ```
 pub fn common_reserved() -> [Str] []
-    todo("slug-nv.slugroute.common_reserved")
+    ["new",
+        "edit",
+        "delete",
+        "admin",
+        "api",
+        "login",
+        "logout",
+        "signup",
+        "search",
+        "static",
+        "assets",
+        "feed",
+        "rss",
+        "sitemap",
+        "robots",
+        "index",
+        "about",
+        "null",
+        "undefined",
+        "true",
+        "false"]
 
-// Whether `slug` is in `words` — the predicate body a caller with a
-// list rather than a query writes.
+// Whether `slug` is in `words`: the predicate body a caller with a list
+// rather than a query writes.
+//
+// ```novo
+// use slugroute
+//
+// println("${slugroute.reserved_in(["new"], "new")}")   // true
+// ```
 pub fn reserved_in(words: [Str], slug: Str) -> Bool []
-    todo("slug-nv.slugroute.reserved_in")
+    list.contains(words, slug)
 
 // Whether a slug is safe as a path segment: not empty, not `.` or
-// `..`, no `/`, no percent sign, and no character a URL would have to
-// escape.
+// `..`, and every ASCII character one RFC 3986 allows in a segment
+// without escaping, less the percent sign.  A character outside ASCII
+// is allowed, as RFC 3987 allows it in an IRI, since a Unicode slug is
+// meant to keep its letters.
+//
+// ```novo
+// use slugroute
+//
+// println("${slugroute.is_safe_segment("..")}")   // false
+// ```
 //
 // The last check before a slug becomes a path, and it is separate from
 // `slugpolicy.is_canonical` because the two ask different questions: a
 // slug can be exactly what the policy produces and still be `..` if
 // the policy's separator is `.`.
 pub fn is_safe_segment(slug: Str) -> Bool []
-    todo("slug-nv.slugroute.is_safe_segment")
+    if slug == "" or slug == "." or slug == ".."
+        return false
+    list.all(list.range(0, str.len(slug)), i => segment_byte(str.byte_at_or(slug, i, 0)))
 
 // Whether two slugs would collide in a route table that compares
 // case-insensitively — which most filesystems do, and therefore most
@@ -187,6 +269,52 @@ pub fn is_safe_segment(slug: Str) -> Bool []
 //
 // Published because a generator writing `Intro.html` and `intro.html`
 // into one directory produces one file on macOS and two on Linux, and
-// the failure appears only in deployment.
+// the failure appears only in deployment.  Two equal slugs are not a
+// case collision; they are the same slug.
+//
+// ```novo
+// use slugroute
+//
+// println("${slugroute.collides_on_case("Intro", "intro")}")   // true
+// ```
 pub fn collides_on_case(a: Str, b: Str) -> Bool []
-    todo("slug-nv.slugroute.collides_on_case")
+    a != b and str.lower(a) == str.lower(b)
+
+// A predicate that holds for nothing.
+fn never(slug: Str) -> Bool
+    false
+
+// The first of `slug`, `slug-2`, `slug-3` and so on that neither
+// predicate refuses, and the suffix used.
+fn numbered(slug: Str, separator: Str, reserved: SlugReservedFn, taken: SlugTakenFn) -> (Str, Int)
+    if not reserved(slug) and not taken(slug)
+        return (slug, 0)
+    var k = 2
+    for _ in 0..1000000
+        let candidate = slug + separator + str.from_int(k)
+        if not reserved(candidate) and not taken(candidate)
+            break
+        k = k + 1
+    (slug + separator + str.from_int(k), k)
+
+fn is_digit(b: Int) -> Bool
+    b >= '0' and b <= '9'
+
+// The byte offset of the last occurrence of `sub` in `s`, or `None`.
+fn last_index(s: Str, sub: Str) -> ?Int
+    var found: ?Int = None
+    var from = 0
+    for _ in 0..str.len(s)
+        match str.index_from(s, sub, from)
+            None     =>
+                break
+            Some(at) =>
+                found = Some(at)
+                from = at + 1
+    found
+
+// Whether a byte may stand in a path segment unescaped: RFC 3986's
+// unreserved characters, sub-delimiters, `:` and `@`, or any byte of a
+// character outside ASCII.
+fn segment_byte(b: Int) -> Bool
+    b >= 0x80 or b >= 'a' and b <= 'z' or b >= 'A' and b <= 'Z' or b >= '0' and b <= '9' or str.contains("-._~!$&'()*+,;=:@", str.from_byte(b))

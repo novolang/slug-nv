@@ -1,52 +1,37 @@
 // slugtrans.nv — the transliteration table, and where it stops.
 //
-// Every body here is a `todo()`; the signatures are the design.
-//
-// THE TABLE IS THIS PACKAGE'S OWN, AND IT IS TIERED, for the same
+// The table is this package's own, and it is tiered, for the same
 // reason unicode-nv's is: the useful half is small and the complete
-// half is enormous. `deunicode` — itself derived from Perl's
-// `Text::Unidecode` — covers essentially all of Unicode in about
-// 500 KB, most of which is Han romanisation. A site generator slugging
-// English and Danish headings should not link 500 KB to turn `å` into
-// `aa`.
+// half is large.  `deunicode`, itself derived from Perl's
+// `Text::Unidecode`, covers essentially all of Unicode in about
+// 500 KB, most of which is Han romanisation.  A site generator
+// slugging English and Danish headings should not link 500 KB to turn
+// `å` into `aa`.
 //
-// So there are two tiers, and the signature says which one a caller
-// is using.
+// `latin_table()` is the compiled tier: Latin-1 Supplement, Latin
+// Extended-A and -B, Latin Extended Additional, Greek and Coptic,
+// Greek Extended, Cyrillic and its supplement, the combining marks,
+// general punctuation, the currency signs and the letterlike symbols.
+// Its answers are deunicode's, written into the table at the end of
+// this file by `tools/trans_table.py`, with three sets of overrides:
+// Danish and Norwegian `å` and `ø` are `aa` and `oe`, Russian follows
+// the BGN/PCGN romanisation without its diacritics (`Ю` is `Yu`), and
+// `№` is `No`.
 //
-//   `latin_table()`     COMPILED IN, about 6 KB. Latin-1 Supplement,
-//                       Latin Extended-A and the used part of
-//                       Extended-B, Latin Extended Additional,
-//                       Greek and Coptic, and Cyrillic. That is every
-//                       European language written in an alphabet, and
-//                       it is what the overwhelming majority of
-//                       callers need.
+// `table_from_bytes` is the rest: a table whose extra entries arrive
+// as bytes the host read, because a `core` package reads no file.  A
+// loaded table answers from its own entries first and from the
+// compiled tier after.
 //
-//   `table_from_bytes`  THE REST, parsed from a blob the HOST read.
-//                       Hebrew, Arabic, Devanagari, Georgian,
-//                       Armenian, Thai, Kana, and Han. A `core`
-//                       package cannot read a file, so the bytes
-//                       arrive as an argument — which is also what
-//                       lets a program pick the tier at run time
-//                       rather than at link time.
+// Han characters have no single romanisation: 行 is `xing` or `hang`
+// in Mandarin depending on the word, and `gyou`, `kou` or `an` in
+// Japanese.  `SlugScriptHan` is a script a caller can ask about before
+// trusting a romanisation, and a CJK site probably wants
+// `SlugModeUnicode` and a percent-encoded path instead.
 //
-// WHAT IS NOT IN EITHER, AND WHY IT IS NAMED. Han characters have no
-// single romanisation: 行 is `xing` or `hang` in Mandarin depending on
-// the word, and `gyou`, `kou` or `an` in Japanese. `Text::Unidecode`
-// picks one and is wrong about half the time, and a slug generator
-// that silently produces a wrong romanisation is worse than one that
-// says it dropped the characters. So the extended table carries the
-// Unidecode answers, `SlugScriptHan` is a script a caller can ask
-// about before trusting the output, and `SlugNoteDropped` is what a
-// caller gets when it is not loaded. A CJK site wants
-// `SlugModeUnicode` and a percent-encoded path, not a romanisation.
-//
-// TRANSLITERATION IS NOT NORMALISATION AND IS NOT CASE FOLDING.  This
-// module answers ASCII for a non-ASCII character. `é` is `e` here and
-// `e` + U+0301 under NFD; the difference matters because a decomposed
-// `é` reaches this table as two characters, the second of which has no
-// transliteration. So `slugmake` normalises to NFC before
-// transliterating, and this module's contract is over precomposed
-// input.
+// Transliteration is not normalisation.  A decomposed `é` reaches this
+// table as `e` and U+0301, and the combining mark's answer is empty,
+// so the result is the same `e` either way.
 
 // The scripts the tables cover, so a caller can ask before it trusts
 // the answer.
@@ -92,6 +77,10 @@ pub struct SlugTable
     // A short name for the tier, for a log line: `"latin"` or
     // `"full"`.
     name: Str
+    // The table's own answers, as a codepoint and its ASCII, sorted by
+    // codepoint.  Consulted before the compiled tier.  Empty for
+    // `latin_table()`, whose answers are all compiled.
+    entries: [(Int, Str)]
 
 // The compiled-in table: Latin, Greek, Cyrillic. About 6 KB, and no
 // host involved.
@@ -103,28 +92,96 @@ pub struct SlugTable
 // println(t.name)   // latin
 // ```
 pub fn latin_table() -> SlugTable []
-    todo("slug-nv.slugtrans.latin_table")
+    SlugTable { scripts: [SlugScriptAscii, SlugScriptLatin, SlugScriptGreek, SlugScriptCyrillic],
+        name: "latin",
+        entries: [] }
 
 // A table parsed out of bytes the host read.
 //
-// `None` when the blob is not one — a wrong magic, a truncated index,
-// a version this release does not know. The format is this package's
-// own and `pack_bytes` writes it, so a build step can generate the
-// blob from `deunicode`'s source data and ship it beside the binary.
+// `None` when the blob is not one: a wrong magic, a truncated entry, a
+// script code this release does not know, entries out of order, or
+// bytes after the last entry.  The format is this package's own and
+// `pack_bytes` writes it, so a build step can generate the blob from
+// `deunicode`'s data and ship it beside the binary.
 pub fn table_from_bytes(blob: [u8]) -> ?SlugTable []
-    todo("slug-nv.slugtrans.table_from_bytes")
+    let n = list.len(blob)
+    if n < 12 or not magic_ok(blob)
+        return None
+    let name_len = be(blob, 6, 2)
+    var at = 8 + name_len
+    if at + 2 > n
+        return None
+    var name_bytes: [Int] = []
+    for i in 8..at
+        list.push(name_bytes, blob[i] as Int)
+    let script_count = be(blob, at, 2)
+    at = at + 2
+    if at + script_count + 4 > n
+        return None
+    var scripts: [SlugScript] = []
+    for i in 0..script_count
+        let Some(sc) = script_of_code(blob[at + i] as Int) else return None
+        list.push(scripts, sc)
+    at = at + script_count
+    let entry_count = be(blob, at, 4)
+    at = at + 4
+    var entries: [(Int, Str)] = []
+    var previous = -1
+    for _ in 0..entry_count
+        if at + 4 > n
+            return None
+        let ch = be(blob, at, 3)
+        let len = blob[at + 3] as Int
+        if ch <= previous or at + 4 + len > n
+            return None
+        var text: [Int] = []
+        for i in at + 4..at + 4 + len
+            list.push(text, blob[i] as Int)
+        list.push(entries, (ch, bytes.byte_list_to_str(text)))
+        previous = ch
+        at = at + 4 + len
+    if at != n
+        return None
+    Some(SlugTable { scripts: scripts, name: bytes.byte_list_to_str(name_bytes), entries: entries })
 
 // Append a table's serialised form to `out`, for the build step that
-// makes the blob.
-pub fn pack_bytes(out: [u8], t: SlugTable) -> [u8] []
-    todo("slug-nv.slugtrans.pack_bytes")
+// makes the blob.  `out` is written in place and answered.
+//
+// The form is the six bytes `SLUGT1`, the name's length in two bytes
+// and the name in UTF-8, the script count in two bytes and one byte
+// per script, the entry count in four bytes, and each entry as its
+// codepoint in three bytes, the length of its answer in one byte and
+// the answer.  Every number is big-endian.
+pub fn pack_bytes(var out: [u8], t: SlugTable) -> [u8] []
+    for b in MAGIC
+        list.push(out, b as u8)
+    let name = bytes.to_byte_list(bytes.from_str(t.name))
+    put_be(out, list.len(name), 2)
+    for b in name
+        list.push(out, b)
+    put_be(out, list.len(t.scripts), 2)
+    for sc in t.scripts
+        list.push(out, script_code(sc) as u8)
+    put_be(out, list.len(t.entries), 4)
+    for e in t.entries
+        let (ch, text) = e
+        let tb = bytes.to_byte_list(bytes.from_str(text))
+        put_be(out, ch, 3)
+        list.push(out, list.len(tb) as u8)
+        for b in tb
+            list.push(out, b)
+    out
 
-// Whether `t` has an answer for `ch`.
+// Whether `t` has an answer for `ch`, from its own entries or from
+// the compiled tier.  An answer may be empty: a combining mark is
+// covered, and its answer is nothing.
 //
 // The check a caller makes before deciding whether a dropped character
 // is a gap in the table or genuinely untransliterable.
 pub fn covers(t: SlugTable, ch: Int) -> Bool []
-    todo("slug-nv.slugtrans.covers")
+    match lookup(t, ch)
+        Some(_) => true
+        None    => false
 
 // Which script `ch` belongs to, for the purposes of this table.
 //
@@ -132,11 +189,38 @@ pub fn covers(t: SlugTable, ch: Int) -> Bool []
 // answers is "which tier do I need", and Latin Extended-B and Latin-1
 // Supplement are one answer to that even though they are two blocks.
 pub fn script_of(ch: Int) -> SlugScript []
-    todo("slug-nv.slugtrans.script_of")
+    if ch < 0x80
+        return SlugScriptAscii
+    if in_ranges(ch, [0x0080, 0x024F, 0x1E00, 0x1EFF, 0x2C60, 0x2C7F, 0xA720, 0xA7FF])
+        return SlugScriptLatin
+    if in_ranges(ch, [0x0370, 0x03FF, 0x1F00, 0x1FFF])
+        return SlugScriptGreek
+    if in_ranges(ch, [0x0400, 0x052F, 0x1C80, 0x1C8F, 0x2DE0, 0x2DFF, 0xA640, 0xA69F])
+        return SlugScriptCyrillic
+    if in_ranges(ch, [0x0590, 0x05FF, 0xFB1D, 0xFB4F])
+        return SlugScriptHebrew
+    if in_ranges(ch, [0x0600, 0x06FF, 0x0750, 0x077F, 0x08A0, 0x08FF, 0xFB50, 0xFDFF, 0xFE70, 0xFEFF])
+        return SlugScriptArabic
+    if in_ranges(ch, [0x0900, 0x097F, 0xA8E0, 0xA8FF])
+        return SlugScriptDevanagari
+    if in_ranges(ch, [0x0530, 0x058F, 0x10A0, 0x10FF, 0x1C90, 0x1CBF, 0x2D00, 0x2D2F])
+        return SlugScriptCaucasus
+    if in_ranges(ch, [0x0E00, 0x0EFF])
+        return SlugScriptThai
+    if in_ranges(ch, [0x3040, 0x30FF, 0x31F0, 0x31FF, 0xFF65, 0xFF9F])
+        return SlugScriptKana
+    if in_ranges(ch, [0x3400, 0x4DBF, 0x4E00, 0x9FFF, 0xF900, 0xFAFF, 0x20000, 0x2FFFF])
+        return SlugScriptHan
+    SlugScriptNone
 
 // Whether a script is in the compiled-in tier.
 pub fn script_is_compiled(s: SlugScript) -> Bool []
-    todo("slug-nv.slugtrans.script_is_compiled")
+    match s
+        SlugScriptAscii    => true
+        SlugScriptLatin    => true
+        SlugScriptGreek    => true
+        SlugScriptCyrillic => true
+        _                  => false
 
 // The ASCII for one character, or an empty string when the table has
 // none.
@@ -152,7 +236,7 @@ pub fn script_is_compiled(s: SlugScript) -> Bool []
 // println(slugtrans.char_ascii(slugtrans.latin_table(), 0x00DF))   // ss
 // ```
 pub fn char_ascii(t: SlugTable, ch: Int) -> Str []
-    todo("slug-nv.slugtrans.char_ascii")
+    lookup(t, ch) ?? ""
 
 // Transliterate a whole string, character by character, with
 // uncovered characters dropped.
@@ -162,11 +246,25 @@ pub fn char_ascii(t: SlugTable, ch: Int) -> Str []
 // caller sometimes wants the transliteration and not the slug — a
 // search index normalising its terms, a sort key for a list of names.
 pub fn transliterate(t: SlugTable, text: Str) -> Str []
-    todo("slug-nv.slugtrans.transliterate")
+    var out: [u8] = []
+    bytes.byte_list_to_str(transliterate_into(out, t, text))
 
-// The same, appended to the caller's buffer.
-pub fn transliterate_into(out: [u8], t: SlugTable, text: Str) -> [u8] []
-    todo("slug-nv.slugtrans.transliterate_into")
+// The same, appended to the caller's buffer, which is written in place
+// and answered.
+pub fn transliterate_into(var out: [u8], t: SlugTable, text: Str) -> [u8] []
+    var i = 0
+    let n = str.len(text)
+    for _ in 0..n
+        if i >= n
+            break
+        let ch = char_at(text, i)
+        if ch < 0x80
+            list.push(out, ch as u8)
+        else
+            for b in bytes.to_byte_list(bytes.from_str(lookup(t, ch) ?? ""))
+                list.push(out, b)
+        i = i + char_width(text, i)
+    out
 
 // How many characters of `text` this table has no answer for.
 //
@@ -174,7 +272,17 @@ pub fn transliterate_into(out: [u8], t: SlugTable, text: Str) -> [u8] []
 // a title that came out as three characters out of thirty did not
 // slugify, it disappeared, and nobody finds out from the slug itself.
 pub fn uncovered_count(t: SlugTable, text: Str) -> Int []
-    todo("slug-nv.slugtrans.uncovered_count")
+    var count = 0
+    var i = 0
+    let n = str.len(text)
+    for _ in 0..n
+        if i >= n
+            break
+        let ch = char_at(text, i)
+        if ch >= 0x80 and lookup(t, ch) == None
+            count = count + 1
+        i = i + char_width(text, i)
+    count
 
 // The short-word substitutions `SlugPolicy.expand_symbols` applies, as
 // pairs of a character and its word: `&` to `and`, `@` to `at`, `%` to
@@ -185,13 +293,1924 @@ pub fn uncovered_count(t: SlugTable, text: Str) -> Int []
 // script one — `&` is `und` in German — and a caller serving another
 // language passes its own list to `slugmake.slugify_with_words`.
 pub fn word_substitutions() -> [(Int, Str)] []
-    todo("slug-nv.slugtrans.word_substitutions")
+    words_for("en")
 
 // The substitutions for a language named by its BCP 47 primary
 // subtag, or the English list for a tag this release has none for.
 //
-// `de`, `fr`, `es`, `da` and `en` at 0.1.0, and the README says how a
-// language is added: one row per symbol, and a test asserting the
-// round trip.
+// `de`, `fr`, `es`, `da` and `en`.  The primary subtag is matched
+// case-insensitively, so `de-AT` and `DE` are German.
 pub fn word_substitutions_for(language: Str) -> [(Int, Str)] []
-    todo("slug-nv.slugtrans.word_substitutions_for")
+    let primary = str.lower(str.split(language, "-")[0])
+    words_for(primary)
+
+// The magic that begins a serialised table: `SLUGT1`.
+const MAGIC: [Int] = ['S', 'L', 'U', 'G', 'T', '1']
+
+// The answer for `ch`, or `None` when the table has none.
+//
+// `char_ascii` answers the empty string for both an uncovered
+// character and a covered one whose answer is nothing, such as a
+// combining mark.  This call tells the two apart.
+//
+// ```novo
+// use slugtrans
+//
+// println(slugtrans.char_ascii_of(slugtrans.latin_table(), 0x0301) ?? "none")   // (empty)
+// ```
+pub fn char_ascii_of(t: SlugTable, ch: Int) -> ?Str
+    lookup(t, ch)
+
+// The answer for `ch`: the table's own entry, then the compiled tier.
+fn lookup(t: SlugTable, ch: Int) -> ?Str
+    var lo = 0
+    var hi = list.len(t.entries)
+    for _ in 0..hi
+        if lo >= hi
+            break
+        let mid = (lo + hi) / 2
+        let (key, text) = t.entries[mid]
+        if key == ch
+            return Some(text)
+        if key < ch
+            lo = mid + 1
+        else
+            hi = mid
+    compiled(ch)
+
+// Whether `ch` falls in one of the inclusive ranges, given as pairs.
+fn in_ranges(ch: Int, bounds: [Int]) -> Bool
+    list.any(list.range(0, list.len(bounds) / 2), i => ch >= bounds[2 * i] and ch <= bounds[2 * i + 1])
+
+// The byte a serialised table uses for a script.
+fn script_code(sc: SlugScript) -> Int
+    match sc
+        SlugScriptAscii      => 0
+        SlugScriptLatin      => 1
+        SlugScriptGreek      => 2
+        SlugScriptCyrillic   => 3
+        SlugScriptHebrew     => 4
+        SlugScriptArabic     => 5
+        SlugScriptDevanagari => 6
+        SlugScriptCaucasus   => 7
+        SlugScriptThai       => 8
+        SlugScriptKana       => 9
+        SlugScriptHan        => 10
+        SlugScriptNone       => 11
+
+// The script a serialised table's byte stands for, or `None`.
+fn script_of_code(code: Int) -> ?SlugScript
+    match code
+        0  => Some(SlugScriptAscii)
+        1  => Some(SlugScriptLatin)
+        2  => Some(SlugScriptGreek)
+        3  => Some(SlugScriptCyrillic)
+        4  => Some(SlugScriptHebrew)
+        5  => Some(SlugScriptArabic)
+        6  => Some(SlugScriptDevanagari)
+        7  => Some(SlugScriptCaucasus)
+        8  => Some(SlugScriptThai)
+        9  => Some(SlugScriptKana)
+        10 => Some(SlugScriptHan)
+        11 => Some(SlugScriptNone)
+        _  => None
+
+// Whether a blob begins with the magic.
+fn magic_ok(blob: [u8]) -> Bool
+    list.all(list.range(0, list.len(MAGIC)), i => (blob[i] as Int) == MAGIC[i])
+
+// A big-endian number of `width` bytes at `at`.
+fn be(blob: [u8], at: Int, width: Int) -> Int
+    list.fold(list.range(at, at + width), (n, i) => n * 256 + blob[i] as Int, 0)
+
+// Append a big-endian number of `width` bytes.
+fn put_be(var out: [u8], n: Int, width: Int)
+    for k in 0..width
+        list.push(out, (n >> (8 * (width - 1 - k))) & 0xFF as u8)
+
+// The codepoint whose UTF-8 encoding starts at byte `i` of `text`.
+//
+// A byte that does not start a well-formed sequence is answered as
+// itself, so a walk over malformed text still moves forward.  The
+// table is keyed by codepoint, and this is how a caller walking a
+// title reaches the key.
+//
+// ```novo
+// use slugtrans
+//
+// println("${slugtrans.char_at("aé", 1)}")      // 233
+// ```
+pub fn char_at(text: Str, i: Int) -> Int
+    let b = str.byte_at_or(text, i, 0)
+    let width = char_width(text, i)
+    if width == 1
+        return b
+    let lead = if width == 2
+        b & 0x1F
+    else
+        if width == 3
+            b & 0x0F
+        else
+            b & 0x07
+    list.fold(list.range(i + 1, i + width), (cp, k) => cp * 64 + (str.byte_at_or(text, k, 0) & 0x3F), lead)
+
+// How many bytes the character at byte `i` of `text` takes: the
+// length its lead byte announces when the continuation bytes are
+// there, and 1 for a byte that starts no well-formed sequence.
+//
+// ```novo
+// use slugtrans
+//
+// println("${slugtrans.char_width("aé", 1)}")   // 2
+// ```
+pub fn char_width(text: Str, i: Int) -> Int
+    let b = str.byte_at_or(text, i, 0)
+    let want = if b >= 0xF0 and b < 0xF8
+        4
+    else
+        if b >= 0xE0
+            3
+        else
+            if b >= 0xC0
+                2
+            else
+                1
+    if want == 1 or b >= 0xF8
+        return 1
+    let ok = list.all(list.range(i + 1, i + want), k => (str.byte_at_or(text, k, 0) & 0xC0) == 0x80)
+    if ok
+        return want
+    1
+
+// The symbol words of a language, by its primary subtag.
+fn words_for(language: Str) -> [(Int, Str)]
+    match language
+        "de" => [('&', "und"),
+            ('@', "at"),
+            ('%', "prozent"),
+            ('+', "plus"),
+            ('=', "gleich"),
+            ('#', "nummer"),
+            ('$', "dollar"),
+            ('<', "kleiner"),
+            ('>', "groesser"),
+            (0x20AC, "euro"),
+            (0x00A3, "pfund"),
+            (0x00A5, "yen")]
+        "fr" => [('&', "et"),
+            ('@', "arobase"),
+            ('%', "pourcent"),
+            ('+', "plus"),
+            ('=', "egal"),
+            ('#', "numero"),
+            ('$', "dollar"),
+            ('<', "inferieur"),
+            ('>', "superieur"),
+            (0x20AC, "euro"),
+            (0x00A3, "livre"),
+            (0x00A5, "yen")]
+        "es" => [('&', "y"),
+            ('@', "arroba"),
+            ('%', "por ciento"),
+            ('+', "mas"),
+            ('=', "igual"),
+            ('#', "numero"),
+            ('$', "dolar"),
+            ('<', "menor"),
+            ('>', "mayor"),
+            (0x20AC, "euro"),
+            (0x00A3, "libra"),
+            (0x00A5, "yen")]
+        "da" => [('&', "og"),
+            ('@', "snabel a"),
+            ('%', "procent"),
+            ('+', "plus"),
+            ('=', "lig med"),
+            ('#', "nummer"),
+            ('$', "dollar"),
+            ('<', "mindre end"),
+            ('>', "stoerre end"),
+            (0x20AC, "euro"),
+            (0x00A3, "pund"),
+            (0x00A5, "yen")]
+        _    => [('&', "and"),
+            ('@', "at"),
+            ('%', "percent"),
+            ('+', "plus"),
+            ('=', "equals"),
+            ('#', "number"),
+            ('$', "dollar"),
+            ('<', "less"),
+            ('>', "greater"),
+            (0x20AC, "euro"),
+            (0x00A3, "pound"),
+            (0x00A5, "yen")]
+
+// The compiled table.
+//
+// Written by tools/trans_table.py from deunicode 1.6.0, with the
+// overrides that script names.  1696 characters.
+
+const COMPILED: Int = 1696
+
+// The compiled answer for `ch`, or `None` for a character the
+// compiled tier does not cover.
+fn compiled(ch: Int) -> ?Str
+    match ch
+        0xa0   => Some(" ")
+        0xa1   => Some("!")
+        0xa2   => Some("C/")
+        0xa3   => Some("PS")
+        0xa4   => Some("\$?")
+        0xa5   => Some("Y=")
+        0xa6   => Some("|")
+        0xa7   => Some("SS")
+        0xa8   => Some("\"")
+        0xa9   => Some("(c)")
+        0xaa   => Some("a")
+        0xab   => Some("<<")
+        0xac   => Some("!")
+        0xad   => Some("")
+        0xae   => Some("(r)")
+        0xaf   => Some("-")
+        0xb0   => Some("deg")
+        0xb1   => Some("+-")
+        0xb2   => Some("2")
+        0xb3   => Some("3")
+        0xb4   => Some("'")
+        0xb5   => Some("u")
+        0xb6   => Some("P")
+        0xb7   => Some("*")
+        0xb8   => Some(",")
+        0xb9   => Some("1")
+        0xba   => Some("o")
+        0xbb   => Some(">>")
+        0xbc   => Some("1/4")
+        0xbd   => Some("1/2")
+        0xbe   => Some("3/4")
+        0xbf   => Some("?")
+        0xc0   => Some("A")
+        0xc1   => Some("A")
+        0xc2   => Some("A")
+        0xc3   => Some("A")
+        0xc4   => Some("A")
+        0xc5   => Some("Aa")
+        0xc6   => Some("AE")
+        0xc7   => Some("C")
+        0xc8   => Some("E")
+        0xc9   => Some("E")
+        0xca   => Some("E")
+        0xcb   => Some("E")
+        0xcc   => Some("I")
+        0xcd   => Some("I")
+        0xce   => Some("I")
+        0xcf   => Some("I")
+        0xd0   => Some("D")
+        0xd1   => Some("N")
+        0xd2   => Some("O")
+        0xd3   => Some("O")
+        0xd4   => Some("O")
+        0xd5   => Some("O")
+        0xd6   => Some("O")
+        0xd7   => Some("x")
+        0xd8   => Some("Oe")
+        0xd9   => Some("U")
+        0xda   => Some("U")
+        0xdb   => Some("U")
+        0xdc   => Some("U")
+        0xdd   => Some("Y")
+        0xde   => Some("Th")
+        0xdf   => Some("ss")
+        0xe0   => Some("a")
+        0xe1   => Some("a")
+        0xe2   => Some("a")
+        0xe3   => Some("a")
+        0xe4   => Some("a")
+        0xe5   => Some("aa")
+        0xe6   => Some("ae")
+        0xe7   => Some("c")
+        0xe8   => Some("e")
+        0xe9   => Some("e")
+        0xea   => Some("e")
+        0xeb   => Some("e")
+        0xec   => Some("i")
+        0xed   => Some("i")
+        0xee   => Some("i")
+        0xef   => Some("i")
+        0xf0   => Some("d")
+        0xf1   => Some("n")
+        0xf2   => Some("o")
+        0xf3   => Some("o")
+        0xf4   => Some("o")
+        0xf5   => Some("o")
+        0xf6   => Some("o")
+        0xf7   => Some("/")
+        0xf8   => Some("oe")
+        0xf9   => Some("u")
+        0xfa   => Some("u")
+        0xfb   => Some("u")
+        0xfc   => Some("u")
+        0xfd   => Some("y")
+        0xfe   => Some("th")
+        0xff   => Some("y")
+        0x100  => Some("A")
+        0x101  => Some("a")
+        0x102  => Some("A")
+        0x103  => Some("a")
+        0x104  => Some("A")
+        0x105  => Some("a")
+        0x106  => Some("C")
+        0x107  => Some("c")
+        0x108  => Some("C")
+        0x109  => Some("c")
+        0x10a  => Some("C")
+        0x10b  => Some("c")
+        0x10c  => Some("C")
+        0x10d  => Some("c")
+        0x10e  => Some("D")
+        0x10f  => Some("d")
+        0x110  => Some("D")
+        0x111  => Some("d")
+        0x112  => Some("E")
+        0x113  => Some("e")
+        0x114  => Some("E")
+        0x115  => Some("e")
+        0x116  => Some("E")
+        0x117  => Some("e")
+        0x118  => Some("E")
+        0x119  => Some("e")
+        0x11a  => Some("E")
+        0x11b  => Some("e")
+        0x11c  => Some("G")
+        0x11d  => Some("g")
+        0x11e  => Some("G")
+        0x11f  => Some("g")
+        0x120  => Some("G")
+        0x121  => Some("g")
+        0x122  => Some("G")
+        0x123  => Some("g")
+        0x124  => Some("H")
+        0x125  => Some("h")
+        0x126  => Some("H")
+        0x127  => Some("h")
+        0x128  => Some("I")
+        0x129  => Some("i")
+        0x12a  => Some("I")
+        0x12b  => Some("i")
+        0x12c  => Some("I")
+        0x12d  => Some("i")
+        0x12e  => Some("I")
+        0x12f  => Some("i")
+        0x130  => Some("I")
+        0x131  => Some("i")
+        0x132  => Some("IJ")
+        0x133  => Some("ij")
+        0x134  => Some("J")
+        0x135  => Some("j")
+        0x136  => Some("K")
+        0x137  => Some("k")
+        0x138  => Some("k")
+        0x139  => Some("L")
+        0x13a  => Some("l")
+        0x13b  => Some("L")
+        0x13c  => Some("l")
+        0x13d  => Some("L")
+        0x13e  => Some("l")
+        0x13f  => Some("L")
+        0x140  => Some("l")
+        0x141  => Some("L")
+        0x142  => Some("l")
+        0x143  => Some("N")
+        0x144  => Some("n")
+        0x145  => Some("N")
+        0x146  => Some("n")
+        0x147  => Some("N")
+        0x148  => Some("n")
+        0x149  => Some("'n")
+        0x14a  => Some("ng")
+        0x14b  => Some("NG")
+        0x14c  => Some("O")
+        0x14d  => Some("o")
+        0x14e  => Some("O")
+        0x14f  => Some("o")
+        0x150  => Some("O")
+        0x151  => Some("o")
+        0x152  => Some("OE")
+        0x153  => Some("oe")
+        0x154  => Some("R")
+        0x155  => Some("r")
+        0x156  => Some("R")
+        0x157  => Some("r")
+        0x158  => Some("R")
+        0x159  => Some("r")
+        0x15a  => Some("S")
+        0x15b  => Some("s")
+        0x15c  => Some("S")
+        0x15d  => Some("s")
+        0x15e  => Some("S")
+        0x15f  => Some("s")
+        0x160  => Some("S")
+        0x161  => Some("s")
+        0x162  => Some("T")
+        0x163  => Some("t")
+        0x164  => Some("T")
+        0x165  => Some("t")
+        0x166  => Some("T")
+        0x167  => Some("t")
+        0x168  => Some("U")
+        0x169  => Some("u")
+        0x16a  => Some("U")
+        0x16b  => Some("u")
+        0x16c  => Some("U")
+        0x16d  => Some("u")
+        0x16e  => Some("U")
+        0x16f  => Some("u")
+        0x170  => Some("U")
+        0x171  => Some("u")
+        0x172  => Some("U")
+        0x173  => Some("u")
+        0x174  => Some("W")
+        0x175  => Some("w")
+        0x176  => Some("Y")
+        0x177  => Some("y")
+        0x178  => Some("Y")
+        0x179  => Some("Z")
+        0x17a  => Some("z")
+        0x17b  => Some("Z")
+        0x17c  => Some("z")
+        0x17d  => Some("Z")
+        0x17e  => Some("z")
+        0x17f  => Some("s")
+        0x180  => Some("b")
+        0x181  => Some("B")
+        0x182  => Some("B")
+        0x183  => Some("b")
+        0x184  => Some("6")
+        0x185  => Some("6")
+        0x186  => Some("O")
+        0x187  => Some("C")
+        0x188  => Some("c")
+        0x189  => Some("D")
+        0x18a  => Some("D")
+        0x18b  => Some("D")
+        0x18c  => Some("d")
+        0x18d  => Some("d")
+        0x18e  => Some("3")
+        0x18f  => Some("@")
+        0x190  => Some("E")
+        0x191  => Some("F")
+        0x192  => Some("f")
+        0x193  => Some("G")
+        0x194  => Some("G")
+        0x195  => Some("hv")
+        0x196  => Some("I")
+        0x197  => Some("I")
+        0x198  => Some("K")
+        0x199  => Some("k")
+        0x19a  => Some("l")
+        0x19b  => Some("l")
+        0x19c  => Some("W")
+        0x19d  => Some("N")
+        0x19e  => Some("n")
+        0x19f  => Some("O")
+        0x1a0  => Some("O")
+        0x1a1  => Some("o")
+        0x1a2  => Some("OI")
+        0x1a3  => Some("oi")
+        0x1a4  => Some("P")
+        0x1a5  => Some("p")
+        0x1a6  => Some("YR")
+        0x1a7  => Some("2")
+        0x1a8  => Some("2")
+        0x1a9  => Some("SH")
+        0x1aa  => Some("sh")
+        0x1ab  => Some("t")
+        0x1ac  => Some("T")
+        0x1ad  => Some("t")
+        0x1ae  => Some("T")
+        0x1af  => Some("U")
+        0x1b0  => Some("u")
+        0x1b1  => Some("Y")
+        0x1b2  => Some("V")
+        0x1b3  => Some("Y")
+        0x1b4  => Some("y")
+        0x1b5  => Some("Z")
+        0x1b6  => Some("z")
+        0x1b7  => Some("ZH")
+        0x1b8  => Some("ZH")
+        0x1b9  => Some("zh")
+        0x1ba  => Some("zh")
+        0x1bb  => Some("2")
+        0x1bc  => Some("5")
+        0x1bd  => Some("5")
+        0x1be  => Some("ts")
+        0x1bf  => Some("w")
+        0x1c0  => Some("|")
+        0x1c1  => Some("||")
+        0x1c2  => Some("|=")
+        0x1c3  => Some("!")
+        0x1c4  => Some("DZ")
+        0x1c5  => Some("Dz")
+        0x1c6  => Some("dz")
+        0x1c7  => Some("LJ")
+        0x1c8  => Some("Lj")
+        0x1c9  => Some("lj")
+        0x1ca  => Some("NJ")
+        0x1cb  => Some("Nj")
+        0x1cc  => Some("nj")
+        0x1cd  => Some("A")
+        0x1ce  => Some("a")
+        0x1cf  => Some("I")
+        0x1d0  => Some("i")
+        0x1d1  => Some("O")
+        0x1d2  => Some("o")
+        0x1d3  => Some("U")
+        0x1d4  => Some("u")
+        0x1d5  => Some("U")
+        0x1d6  => Some("u")
+        0x1d7  => Some("U")
+        0x1d8  => Some("u")
+        0x1d9  => Some("U")
+        0x1da  => Some("u")
+        0x1db  => Some("U")
+        0x1dc  => Some("u")
+        0x1dd  => Some("@")
+        0x1de  => Some("A")
+        0x1df  => Some("a")
+        0x1e0  => Some("A")
+        0x1e1  => Some("a")
+        0x1e2  => Some("AE")
+        0x1e3  => Some("ae")
+        0x1e4  => Some("G")
+        0x1e5  => Some("g")
+        0x1e6  => Some("G")
+        0x1e7  => Some("g")
+        0x1e8  => Some("K")
+        0x1e9  => Some("k")
+        0x1ea  => Some("O")
+        0x1eb  => Some("o")
+        0x1ec  => Some("O")
+        0x1ed  => Some("o")
+        0x1ee  => Some("ZH")
+        0x1ef  => Some("zh")
+        0x1f0  => Some("j")
+        0x1f1  => Some("DZ")
+        0x1f2  => Some("Dz")
+        0x1f3  => Some("dz")
+        0x1f4  => Some("G")
+        0x1f5  => Some("g")
+        0x1f6  => Some("HV")
+        0x1f7  => Some("W")
+        0x1f8  => Some("N")
+        0x1f9  => Some("n")
+        0x1fa  => Some("A")
+        0x1fb  => Some("a")
+        0x1fc  => Some("AE")
+        0x1fd  => Some("ae")
+        0x1fe  => Some("O")
+        0x1ff  => Some("o")
+        0x200  => Some("A")
+        0x201  => Some("a")
+        0x202  => Some("A")
+        0x203  => Some("a")
+        0x204  => Some("E")
+        0x205  => Some("e")
+        0x206  => Some("E")
+        0x207  => Some("e")
+        0x208  => Some("I")
+        0x209  => Some("i")
+        0x20a  => Some("I")
+        0x20b  => Some("i")
+        0x20c  => Some("O")
+        0x20d  => Some("o")
+        0x20e  => Some("O")
+        0x20f  => Some("o")
+        0x210  => Some("R")
+        0x211  => Some("r")
+        0x212  => Some("R")
+        0x213  => Some("r")
+        0x214  => Some("U")
+        0x215  => Some("u")
+        0x216  => Some("U")
+        0x217  => Some("u")
+        0x218  => Some("S")
+        0x219  => Some("s")
+        0x21a  => Some("T")
+        0x21b  => Some("t")
+        0x21c  => Some("Y")
+        0x21d  => Some("y")
+        0x21e  => Some("H")
+        0x21f  => Some("h")
+        0x220  => Some("N")
+        0x221  => Some("d")
+        0x222  => Some("OU")
+        0x223  => Some("ou")
+        0x224  => Some("Z")
+        0x225  => Some("z")
+        0x226  => Some("A")
+        0x227  => Some("a")
+        0x228  => Some("E")
+        0x229  => Some("e")
+        0x22a  => Some("O")
+        0x22b  => Some("o")
+        0x22c  => Some("O")
+        0x22d  => Some("o")
+        0x22e  => Some("O")
+        0x22f  => Some("o")
+        0x230  => Some("O")
+        0x231  => Some("o")
+        0x232  => Some("Y")
+        0x233  => Some("y")
+        0x234  => Some("l")
+        0x235  => Some("n")
+        0x236  => Some("t")
+        0x237  => Some("j")
+        0x238  => Some("db")
+        0x239  => Some("qp")
+        0x23a  => Some("A")
+        0x23b  => Some("C")
+        0x23c  => Some("c")
+        0x23d  => Some("L")
+        0x23e  => Some("T")
+        0x23f  => Some("s")
+        0x240  => Some("z")
+        0x241  => Some("'")
+        0x242  => Some("'")
+        0x243  => Some("B")
+        0x244  => Some("U")
+        0x245  => Some("^")
+        0x246  => Some("E")
+        0x247  => Some("e")
+        0x248  => Some("J")
+        0x249  => Some("j")
+        0x24a  => Some("q")
+        0x24b  => Some("q")
+        0x24c  => Some("R")
+        0x24d  => Some("r")
+        0x24e  => Some("Y")
+        0x24f  => Some("y")
+        0x300  => Some("")
+        0x301  => Some("")
+        0x302  => Some("")
+        0x303  => Some("")
+        0x304  => Some("")
+        0x305  => Some("")
+        0x306  => Some("")
+        0x307  => Some("")
+        0x308  => Some("")
+        0x309  => Some("")
+        0x30a  => Some("")
+        0x30b  => Some("")
+        0x30c  => Some("")
+        0x30d  => Some("")
+        0x30e  => Some("")
+        0x30f  => Some("")
+        0x310  => Some("")
+        0x311  => Some("")
+        0x312  => Some("")
+        0x313  => Some("")
+        0x314  => Some("")
+        0x315  => Some("")
+        0x316  => Some("")
+        0x317  => Some("")
+        0x318  => Some("")
+        0x319  => Some("")
+        0x31a  => Some("")
+        0x31b  => Some("")
+        0x31c  => Some("")
+        0x31d  => Some("")
+        0x31e  => Some("")
+        0x31f  => Some("")
+        0x320  => Some("")
+        0x321  => Some("")
+        0x322  => Some("")
+        0x323  => Some("")
+        0x324  => Some("")
+        0x325  => Some("")
+        0x326  => Some("")
+        0x327  => Some("")
+        0x328  => Some("")
+        0x329  => Some("")
+        0x32a  => Some("")
+        0x32b  => Some("")
+        0x32c  => Some("")
+        0x32d  => Some("")
+        0x32e  => Some("")
+        0x32f  => Some("")
+        0x330  => Some("")
+        0x331  => Some("")
+        0x332  => Some("")
+        0x333  => Some("")
+        0x334  => Some("")
+        0x335  => Some("")
+        0x336  => Some("")
+        0x337  => Some("")
+        0x338  => Some("")
+        0x339  => Some("")
+        0x33a  => Some("")
+        0x33b  => Some("")
+        0x33c  => Some("")
+        0x33d  => Some("")
+        0x33e  => Some("")
+        0x33f  => Some("")
+        0x340  => Some("")
+        0x341  => Some("")
+        0x342  => Some("")
+        0x343  => Some("")
+        0x344  => Some("")
+        0x345  => Some("")
+        0x346  => Some("")
+        0x347  => Some("")
+        0x348  => Some("")
+        0x349  => Some("")
+        0x34a  => Some("")
+        0x34b  => Some("")
+        0x34c  => Some("")
+        0x34d  => Some("")
+        0x34e  => Some("")
+        0x34f  => Some("")
+        0x350  => Some("")
+        0x351  => Some("")
+        0x352  => Some("")
+        0x353  => Some("")
+        0x354  => Some("")
+        0x355  => Some("")
+        0x356  => Some("")
+        0x357  => Some("")
+        0x358  => Some("")
+        0x359  => Some("")
+        0x35a  => Some("")
+        0x35b  => Some("")
+        0x35c  => Some("")
+        0x35d  => Some("")
+        0x35e  => Some("")
+        0x35f  => Some("")
+        0x360  => Some("")
+        0x361  => Some("")
+        0x362  => Some("")
+        0x363  => Some("a")
+        0x364  => Some("e")
+        0x365  => Some("i")
+        0x366  => Some("o")
+        0x367  => Some("u")
+        0x368  => Some("c")
+        0x369  => Some("d")
+        0x36a  => Some("h")
+        0x36b  => Some("m")
+        0x36c  => Some("r")
+        0x36d  => Some("t")
+        0x36e  => Some("v")
+        0x36f  => Some("x")
+        0x370  => Some("H")
+        0x371  => Some("h")
+        0x372  => Some("S")
+        0x373  => Some("s")
+        0x374  => Some("'")
+        0x375  => Some(",")
+        0x376  => Some("W")
+        0x377  => Some("w")
+        0x37a  => Some("")
+        0x37b  => Some("s")
+        0x37c  => Some("s.")
+        0x37d  => Some("s.")
+        0x37e  => Some("?")
+        0x37f  => Some("J")
+        0x384  => Some("")
+        0x385  => Some("")
+        0x386  => Some("A")
+        0x387  => Some(";")
+        0x388  => Some("E")
+        0x389  => Some("E")
+        0x38a  => Some("I")
+        0x38c  => Some("O")
+        0x38e  => Some("U")
+        0x38f  => Some("O")
+        0x390  => Some("I")
+        0x391  => Some("A")
+        0x392  => Some("B")
+        0x393  => Some("G")
+        0x394  => Some("D")
+        0x395  => Some("E")
+        0x396  => Some("Z")
+        0x397  => Some("E")
+        0x398  => Some("Th")
+        0x399  => Some("I")
+        0x39a  => Some("K")
+        0x39b  => Some("L")
+        0x39c  => Some("M")
+        0x39d  => Some("N")
+        0x39e  => Some("Ks")
+        0x39f  => Some("O")
+        0x3a0  => Some("P")
+        0x3a1  => Some("R")
+        0x3a3  => Some("S")
+        0x3a4  => Some("T")
+        0x3a5  => Some("U")
+        0x3a6  => Some("Ph")
+        0x3a7  => Some("Kh")
+        0x3a8  => Some("Ps")
+        0x3a9  => Some("O")
+        0x3aa  => Some("I")
+        0x3ab  => Some("U")
+        0x3ac  => Some("a")
+        0x3ad  => Some("e")
+        0x3ae  => Some("e")
+        0x3af  => Some("i")
+        0x3b0  => Some("u")
+        0x3b1  => Some("a")
+        0x3b2  => Some("b")
+        0x3b3  => Some("g")
+        0x3b4  => Some("d")
+        0x3b5  => Some("e")
+        0x3b6  => Some("z")
+        0x3b7  => Some("e")
+        0x3b8  => Some("th")
+        0x3b9  => Some("i")
+        0x3ba  => Some("k")
+        0x3bb  => Some("l")
+        0x3bc  => Some("m")
+        0x3bd  => Some("n")
+        0x3be  => Some("x")
+        0x3bf  => Some("o")
+        0x3c0  => Some("p")
+        0x3c1  => Some("r")
+        0x3c2  => Some("s")
+        0x3c3  => Some("s")
+        0x3c4  => Some("t")
+        0x3c5  => Some("u")
+        0x3c6  => Some("ph")
+        0x3c7  => Some("kh")
+        0x3c8  => Some("ps")
+        0x3c9  => Some("o")
+        0x3ca  => Some("i")
+        0x3cb  => Some("u")
+        0x3cc  => Some("o")
+        0x3cd  => Some("u")
+        0x3ce  => Some("o")
+        0x3cf  => Some("&")
+        0x3d0  => Some("b")
+        0x3d1  => Some("th")
+        0x3d2  => Some("U")
+        0x3d3  => Some("U")
+        0x3d4  => Some("U")
+        0x3d5  => Some("ph")
+        0x3d6  => Some("p")
+        0x3d7  => Some("&")
+        0x3d8  => Some("Q")
+        0x3d9  => Some("q")
+        0x3da  => Some("St")
+        0x3db  => Some("st")
+        0x3dc  => Some("W")
+        0x3dd  => Some("w")
+        0x3de  => Some("Q")
+        0x3df  => Some("q")
+        0x3e0  => Some("Sp")
+        0x3e1  => Some("sp")
+        0x3e2  => Some("Sh")
+        0x3e3  => Some("sh")
+        0x3e4  => Some("F")
+        0x3e5  => Some("f")
+        0x3e6  => Some("Kh")
+        0x3e7  => Some("kh")
+        0x3e8  => Some("H")
+        0x3e9  => Some("h")
+        0x3ea  => Some("G")
+        0x3eb  => Some("g")
+        0x3ec  => Some("CH")
+        0x3ed  => Some("ch")
+        0x3ee  => Some("Ti")
+        0x3ef  => Some("ti")
+        0x3f0  => Some("k")
+        0x3f1  => Some("r")
+        0x3f2  => Some("c")
+        0x3f3  => Some("j")
+        0x3f4  => Some("TH")
+        0x3f5  => Some("e")
+        0x3f6  => Some("e")
+        0x3f7  => Some("Sh")
+        0x3f8  => Some("sh")
+        0x3f9  => Some("s")
+        0x3fa  => Some("S")
+        0x3fb  => Some("s")
+        0x3fc  => Some("r/")
+        0x3fd  => Some("S")
+        0x3fe  => Some("S.")
+        0x3ff  => Some("S.")
+        0x400  => Some("Ie")
+        0x401  => Some("Yo")
+        0x402  => Some("Dj")
+        0x403  => Some("Gj")
+        0x404  => Some("E")
+        0x405  => Some("Dz")
+        0x406  => Some("I")
+        0x407  => Some("Yi")
+        0x408  => Some("J")
+        0x409  => Some("Lj")
+        0x40a  => Some("Nj")
+        0x40b  => Some("Tsh")
+        0x40c  => Some("Kj")
+        0x40d  => Some("I")
+        0x40e  => Some("U")
+        0x40f  => Some("Dzh")
+        0x410  => Some("A")
+        0x411  => Some("B")
+        0x412  => Some("V")
+        0x413  => Some("G")
+        0x414  => Some("D")
+        0x415  => Some("E")
+        0x416  => Some("Zh")
+        0x417  => Some("Z")
+        0x418  => Some("I")
+        0x419  => Some("Y")
+        0x41a  => Some("K")
+        0x41b  => Some("L")
+        0x41c  => Some("M")
+        0x41d  => Some("N")
+        0x41e  => Some("O")
+        0x41f  => Some("P")
+        0x420  => Some("R")
+        0x421  => Some("S")
+        0x422  => Some("T")
+        0x423  => Some("U")
+        0x424  => Some("F")
+        0x425  => Some("Kh")
+        0x426  => Some("Ts")
+        0x427  => Some("Ch")
+        0x428  => Some("Sh")
+        0x429  => Some("Shch")
+        0x42a  => Some("")
+        0x42b  => Some("Y")
+        0x42c  => Some("")
+        0x42d  => Some("E")
+        0x42e  => Some("Yu")
+        0x42f  => Some("Ya")
+        0x430  => Some("a")
+        0x431  => Some("b")
+        0x432  => Some("v")
+        0x433  => Some("g")
+        0x434  => Some("d")
+        0x435  => Some("e")
+        0x436  => Some("zh")
+        0x437  => Some("z")
+        0x438  => Some("i")
+        0x439  => Some("y")
+        0x43a  => Some("k")
+        0x43b  => Some("l")
+        0x43c  => Some("m")
+        0x43d  => Some("n")
+        0x43e  => Some("o")
+        0x43f  => Some("p")
+        0x440  => Some("r")
+        0x441  => Some("s")
+        0x442  => Some("t")
+        0x443  => Some("u")
+        0x444  => Some("f")
+        0x445  => Some("kh")
+        0x446  => Some("ts")
+        0x447  => Some("ch")
+        0x448  => Some("sh")
+        0x449  => Some("shch")
+        0x44a  => Some("")
+        0x44b  => Some("y")
+        0x44c  => Some("")
+        0x44d  => Some("e")
+        0x44e  => Some("yu")
+        0x44f  => Some("ya")
+        0x450  => Some("ie")
+        0x451  => Some("yo")
+        0x452  => Some("dj")
+        0x453  => Some("gj")
+        0x454  => Some("ie")
+        0x455  => Some("dz")
+        0x456  => Some("i")
+        0x457  => Some("yi")
+        0x458  => Some("j")
+        0x459  => Some("lj")
+        0x45a  => Some("nj")
+        0x45b  => Some("tsh")
+        0x45c  => Some("kj")
+        0x45d  => Some("i")
+        0x45e  => Some("u")
+        0x45f  => Some("dzh")
+        0x460  => Some("O")
+        0x461  => Some("o")
+        0x462  => Some("E")
+        0x463  => Some("e")
+        0x464  => Some("Ie")
+        0x465  => Some("ie")
+        0x466  => Some("E")
+        0x467  => Some("e")
+        0x468  => Some("Ie")
+        0x469  => Some("ie")
+        0x46a  => Some("O")
+        0x46b  => Some("o")
+        0x46c  => Some("Io")
+        0x46d  => Some("io")
+        0x46e  => Some("Ks")
+        0x46f  => Some("ks")
+        0x470  => Some("Ps")
+        0x471  => Some("ps")
+        0x472  => Some("F")
+        0x473  => Some("f")
+        0x474  => Some("Y")
+        0x475  => Some("y")
+        0x476  => Some("Y")
+        0x477  => Some("y")
+        0x478  => Some("u")
+        0x479  => Some("u")
+        0x47a  => Some("O")
+        0x47b  => Some("o")
+        0x47c  => Some("O")
+        0x47d  => Some("o")
+        0x47e  => Some("Ot")
+        0x47f  => Some("ot")
+        0x480  => Some("Q")
+        0x481  => Some("q")
+        0x482  => Some("*1000*")
+        0x483  => Some("")
+        0x484  => Some("")
+        0x485  => Some("")
+        0x486  => Some("")
+        0x487  => Some(".")
+        0x488  => Some("*100.000*")
+        0x489  => Some("*1.000.000*")
+        0x48a  => Some("Jh")
+        0x48b  => Some("jh")
+        0x48c  => Some("\"")
+        0x48d  => Some("\"")
+        0x48e  => Some("R'")
+        0x48f  => Some("r'")
+        0x490  => Some("G'")
+        0x491  => Some("g'")
+        0x492  => Some("G'")
+        0x493  => Some("g'")
+        0x494  => Some("G'")
+        0x495  => Some("g'")
+        0x496  => Some("Zh'")
+        0x497  => Some("zh'")
+        0x498  => Some("Z'")
+        0x499  => Some("z'")
+        0x49a  => Some("K'")
+        0x49b  => Some("k'")
+        0x49c  => Some("K'")
+        0x49d  => Some("k'")
+        0x49e  => Some("K'")
+        0x49f  => Some("k'")
+        0x4a0  => Some("K'")
+        0x4a1  => Some("k'")
+        0x4a2  => Some("N'")
+        0x4a3  => Some("n'")
+        0x4a4  => Some("Ng")
+        0x4a5  => Some("ng")
+        0x4a6  => Some("P'")
+        0x4a7  => Some("p'")
+        0x4a8  => Some("Kh")
+        0x4a9  => Some("kh")
+        0x4aa  => Some("S'")
+        0x4ab  => Some("s'")
+        0x4ac  => Some("T'")
+        0x4ad  => Some("t'")
+        0x4ae  => Some("U")
+        0x4af  => Some("u")
+        0x4b0  => Some("U'")
+        0x4b1  => Some("u'")
+        0x4b2  => Some("Kh'")
+        0x4b3  => Some("kh'")
+        0x4b4  => Some("Tts")
+        0x4b5  => Some("tts")
+        0x4b6  => Some("Ch'")
+        0x4b7  => Some("ch'")
+        0x4b8  => Some("Ch'")
+        0x4b9  => Some("ch'")
+        0x4ba  => Some("H")
+        0x4bb  => Some("h")
+        0x4bc  => Some("Ch")
+        0x4bd  => Some("ch")
+        0x4be  => Some("Ch'")
+        0x4bf  => Some("ch'")
+        0x4c0  => Some("`")
+        0x4c1  => Some("Zh")
+        0x4c2  => Some("zh")
+        0x4c3  => Some("K'")
+        0x4c4  => Some("k'")
+        0x4c5  => Some("Lh")
+        0x4c6  => Some("lh")
+        0x4c7  => Some("N'")
+        0x4c8  => Some("n'")
+        0x4c9  => Some("Nh")
+        0x4ca  => Some("nh")
+        0x4cb  => Some("Ch")
+        0x4cc  => Some("ch")
+        0x4cd  => Some("Mh")
+        0x4ce  => Some("mh")
+        0x4cf  => Some("h")
+        0x4d0  => Some("a")
+        0x4d1  => Some("a")
+        0x4d2  => Some("A")
+        0x4d3  => Some("a")
+        0x4d4  => Some("Ae")
+        0x4d5  => Some("ae")
+        0x4d6  => Some("Ie")
+        0x4d7  => Some("ie")
+        0x4d8  => Some("@")
+        0x4d9  => Some("@")
+        0x4da  => Some("@")
+        0x4db  => Some("@")
+        0x4dc  => Some("Zh")
+        0x4dd  => Some("zh")
+        0x4de  => Some("Z")
+        0x4df  => Some("z")
+        0x4e0  => Some("Dz")
+        0x4e1  => Some("dz")
+        0x4e2  => Some("I")
+        0x4e3  => Some("i")
+        0x4e4  => Some("I")
+        0x4e5  => Some("i")
+        0x4e6  => Some("O")
+        0x4e7  => Some("o")
+        0x4e8  => Some("O")
+        0x4e9  => Some("o")
+        0x4ea  => Some("O")
+        0x4eb  => Some("o")
+        0x4ec  => Some("E")
+        0x4ed  => Some("e")
+        0x4ee  => Some("U")
+        0x4ef  => Some("u")
+        0x4f0  => Some("U")
+        0x4f1  => Some("u")
+        0x4f2  => Some("U")
+        0x4f3  => Some("u")
+        0x4f4  => Some("Ch")
+        0x4f5  => Some("ch")
+        0x4f6  => Some("Gh")
+        0x4f7  => Some("gh")
+        0x4f8  => Some("Y")
+        0x4f9  => Some("y")
+        0x4fa  => Some("Xh")
+        0x4fb  => Some("xh")
+        0x4fc  => Some("X")
+        0x4fd  => Some("x")
+        0x4fe  => Some("H")
+        0x4ff  => Some("h")
+        0x500  => Some("D")
+        0x501  => Some("d")
+        0x502  => Some("Dj")
+        0x503  => Some("dj")
+        0x504  => Some("Zj")
+        0x505  => Some("zj")
+        0x506  => Some("Dz")
+        0x507  => Some("dz")
+        0x508  => Some("Lj")
+        0x509  => Some("lj")
+        0x50a  => Some("Nj")
+        0x50b  => Some("nj")
+        0x50c  => Some("Sj")
+        0x50d  => Some("sj")
+        0x50e  => Some("Tj")
+        0x50f  => Some("tj")
+        0x510  => Some("A")
+        0x511  => Some("a")
+        0x512  => Some("L")
+        0x513  => Some("l")
+        0x514  => Some("Lkh")
+        0x515  => Some("lkh")
+        0x516  => Some("Rkh")
+        0x517  => Some("rkh")
+        0x518  => Some("A")
+        0x519  => Some("a")
+        0x51a  => Some("Q")
+        0x51b  => Some("q")
+        0x51c  => Some("W")
+        0x51d  => Some("w")
+        0x51e  => Some("Q")
+        0x51f  => Some("q")
+        0x520  => Some("L")
+        0x521  => Some("l")
+        0x522  => Some("N")
+        0x523  => Some("n")
+        0x524  => Some("Ph")
+        0x525  => Some("ph")
+        0x526  => Some("'")
+        0x527  => Some("'")
+        0x528  => Some("Ny")
+        0x529  => Some("ny")
+        0x52a  => Some("Dzh")
+        0x52b  => Some("dzh")
+        0x52c  => Some("Dch")
+        0x52d  => Some("dch")
+        0x52e  => Some("L")
+        0x52f  => Some("l")
+        0x1e00 => Some("A")
+        0x1e01 => Some("a")
+        0x1e02 => Some("B")
+        0x1e03 => Some("b")
+        0x1e04 => Some("B")
+        0x1e05 => Some("b")
+        0x1e06 => Some("B")
+        0x1e07 => Some("b")
+        0x1e08 => Some("C")
+        0x1e09 => Some("c")
+        0x1e0a => Some("D")
+        0x1e0b => Some("d")
+        0x1e0c => Some("D")
+        0x1e0d => Some("d")
+        0x1e0e => Some("D")
+        0x1e0f => Some("d")
+        0x1e10 => Some("D")
+        0x1e11 => Some("d")
+        0x1e12 => Some("D")
+        0x1e13 => Some("d")
+        0x1e14 => Some("E")
+        0x1e15 => Some("e")
+        0x1e16 => Some("E")
+        0x1e17 => Some("e")
+        0x1e18 => Some("E")
+        0x1e19 => Some("e")
+        0x1e1a => Some("E")
+        0x1e1b => Some("e")
+        0x1e1c => Some("E")
+        0x1e1d => Some("e")
+        0x1e1e => Some("F")
+        0x1e1f => Some("f")
+        0x1e20 => Some("G")
+        0x1e21 => Some("g")
+        0x1e22 => Some("H")
+        0x1e23 => Some("h")
+        0x1e24 => Some("H")
+        0x1e25 => Some("h")
+        0x1e26 => Some("H")
+        0x1e27 => Some("h")
+        0x1e28 => Some("H")
+        0x1e29 => Some("h")
+        0x1e2a => Some("H")
+        0x1e2b => Some("h")
+        0x1e2c => Some("I")
+        0x1e2d => Some("i")
+        0x1e2e => Some("I")
+        0x1e2f => Some("i")
+        0x1e30 => Some("K")
+        0x1e31 => Some("k")
+        0x1e32 => Some("K")
+        0x1e33 => Some("k")
+        0x1e34 => Some("K")
+        0x1e35 => Some("k")
+        0x1e36 => Some("L")
+        0x1e37 => Some("l")
+        0x1e38 => Some("L")
+        0x1e39 => Some("l")
+        0x1e3a => Some("L")
+        0x1e3b => Some("l")
+        0x1e3c => Some("L")
+        0x1e3d => Some("l")
+        0x1e3e => Some("M")
+        0x1e3f => Some("m")
+        0x1e40 => Some("M")
+        0x1e41 => Some("m")
+        0x1e42 => Some("M")
+        0x1e43 => Some("m")
+        0x1e44 => Some("N")
+        0x1e45 => Some("n")
+        0x1e46 => Some("N")
+        0x1e47 => Some("n")
+        0x1e48 => Some("N")
+        0x1e49 => Some("n")
+        0x1e4a => Some("N")
+        0x1e4b => Some("n")
+        0x1e4c => Some("O")
+        0x1e4d => Some("o")
+        0x1e4e => Some("O")
+        0x1e4f => Some("o")
+        0x1e50 => Some("O")
+        0x1e51 => Some("o")
+        0x1e52 => Some("O")
+        0x1e53 => Some("o")
+        0x1e54 => Some("P")
+        0x1e55 => Some("p")
+        0x1e56 => Some("P")
+        0x1e57 => Some("p")
+        0x1e58 => Some("R")
+        0x1e59 => Some("r")
+        0x1e5a => Some("R")
+        0x1e5b => Some("r")
+        0x1e5c => Some("R")
+        0x1e5d => Some("r")
+        0x1e5e => Some("R")
+        0x1e5f => Some("r")
+        0x1e60 => Some("S")
+        0x1e61 => Some("s")
+        0x1e62 => Some("S")
+        0x1e63 => Some("s")
+        0x1e64 => Some("S")
+        0x1e65 => Some("s")
+        0x1e66 => Some("S")
+        0x1e67 => Some("s")
+        0x1e68 => Some("S")
+        0x1e69 => Some("s")
+        0x1e6a => Some("T")
+        0x1e6b => Some("t")
+        0x1e6c => Some("T")
+        0x1e6d => Some("t")
+        0x1e6e => Some("T")
+        0x1e6f => Some("t")
+        0x1e70 => Some("T")
+        0x1e71 => Some("t")
+        0x1e72 => Some("U")
+        0x1e73 => Some("u")
+        0x1e74 => Some("U")
+        0x1e75 => Some("u")
+        0x1e76 => Some("U")
+        0x1e77 => Some("u")
+        0x1e78 => Some("U")
+        0x1e79 => Some("u")
+        0x1e7a => Some("U")
+        0x1e7b => Some("u")
+        0x1e7c => Some("V")
+        0x1e7d => Some("v")
+        0x1e7e => Some("V")
+        0x1e7f => Some("v")
+        0x1e80 => Some("W")
+        0x1e81 => Some("w")
+        0x1e82 => Some("W")
+        0x1e83 => Some("w")
+        0x1e84 => Some("W")
+        0x1e85 => Some("w")
+        0x1e86 => Some("W")
+        0x1e87 => Some("w")
+        0x1e88 => Some("W")
+        0x1e89 => Some("w")
+        0x1e8a => Some("X")
+        0x1e8b => Some("x")
+        0x1e8c => Some("X")
+        0x1e8d => Some("x")
+        0x1e8e => Some("Y")
+        0x1e8f => Some("y")
+        0x1e90 => Some("Z")
+        0x1e91 => Some("z")
+        0x1e92 => Some("Z")
+        0x1e93 => Some("z")
+        0x1e94 => Some("Z")
+        0x1e95 => Some("z")
+        0x1e96 => Some("h")
+        0x1e97 => Some("t")
+        0x1e98 => Some("w")
+        0x1e99 => Some("y")
+        0x1e9a => Some("a")
+        0x1e9b => Some("s")
+        0x1e9c => Some("s")
+        0x1e9d => Some("s")
+        0x1e9e => Some("Ss")
+        0x1e9f => Some("d")
+        0x1ea0 => Some("A")
+        0x1ea1 => Some("a")
+        0x1ea2 => Some("A")
+        0x1ea3 => Some("a")
+        0x1ea4 => Some("A")
+        0x1ea5 => Some("a")
+        0x1ea6 => Some("A")
+        0x1ea7 => Some("a")
+        0x1ea8 => Some("A")
+        0x1ea9 => Some("a")
+        0x1eaa => Some("A")
+        0x1eab => Some("a")
+        0x1eac => Some("A")
+        0x1ead => Some("a")
+        0x1eae => Some("A")
+        0x1eaf => Some("a")
+        0x1eb0 => Some("A")
+        0x1eb1 => Some("a")
+        0x1eb2 => Some("A")
+        0x1eb3 => Some("a")
+        0x1eb4 => Some("A")
+        0x1eb5 => Some("a")
+        0x1eb6 => Some("A")
+        0x1eb7 => Some("a")
+        0x1eb8 => Some("E")
+        0x1eb9 => Some("e")
+        0x1eba => Some("E")
+        0x1ebb => Some("e")
+        0x1ebc => Some("E")
+        0x1ebd => Some("e")
+        0x1ebe => Some("E")
+        0x1ebf => Some("e")
+        0x1ec0 => Some("E")
+        0x1ec1 => Some("e")
+        0x1ec2 => Some("E")
+        0x1ec3 => Some("e")
+        0x1ec4 => Some("E")
+        0x1ec5 => Some("e")
+        0x1ec6 => Some("E")
+        0x1ec7 => Some("e")
+        0x1ec8 => Some("I")
+        0x1ec9 => Some("i")
+        0x1eca => Some("I")
+        0x1ecb => Some("i")
+        0x1ecc => Some("O")
+        0x1ecd => Some("o")
+        0x1ece => Some("O")
+        0x1ecf => Some("o")
+        0x1ed0 => Some("O")
+        0x1ed1 => Some("o")
+        0x1ed2 => Some("O")
+        0x1ed3 => Some("o")
+        0x1ed4 => Some("O")
+        0x1ed5 => Some("o")
+        0x1ed6 => Some("O")
+        0x1ed7 => Some("o")
+        0x1ed8 => Some("O")
+        0x1ed9 => Some("o")
+        0x1eda => Some("O")
+        0x1edb => Some("o")
+        0x1edc => Some("O")
+        0x1edd => Some("o")
+        0x1ede => Some("O")
+        0x1edf => Some("o")
+        0x1ee0 => Some("O")
+        0x1ee1 => Some("o")
+        0x1ee2 => Some("O")
+        0x1ee3 => Some("o")
+        0x1ee4 => Some("U")
+        0x1ee5 => Some("u")
+        0x1ee6 => Some("U")
+        0x1ee7 => Some("u")
+        0x1ee8 => Some("U")
+        0x1ee9 => Some("u")
+        0x1eea => Some("U")
+        0x1eeb => Some("u")
+        0x1eec => Some("U")
+        0x1eed => Some("u")
+        0x1eee => Some("U")
+        0x1eef => Some("u")
+        0x1ef0 => Some("U")
+        0x1ef1 => Some("u")
+        0x1ef2 => Some("Y")
+        0x1ef3 => Some("y")
+        0x1ef4 => Some("Y")
+        0x1ef5 => Some("y")
+        0x1ef6 => Some("Y")
+        0x1ef7 => Some("y")
+        0x1ef8 => Some("Y")
+        0x1ef9 => Some("y")
+        0x1efa => Some("LL")
+        0x1efb => Some("ll")
+        0x1efc => Some("V")
+        0x1efd => Some("v")
+        0x1efe => Some("Y")
+        0x1eff => Some("y")
+        0x1f00 => Some("a")
+        0x1f01 => Some("a")
+        0x1f02 => Some("a")
+        0x1f03 => Some("a")
+        0x1f04 => Some("a")
+        0x1f05 => Some("a")
+        0x1f06 => Some("a")
+        0x1f07 => Some("a")
+        0x1f08 => Some("A")
+        0x1f09 => Some("A")
+        0x1f0a => Some("A")
+        0x1f0b => Some("A")
+        0x1f0c => Some("A")
+        0x1f0d => Some("A")
+        0x1f0e => Some("A")
+        0x1f0f => Some("A")
+        0x1f10 => Some("e")
+        0x1f11 => Some("e")
+        0x1f12 => Some("e")
+        0x1f13 => Some("e")
+        0x1f14 => Some("e")
+        0x1f15 => Some("e")
+        0x1f18 => Some("E")
+        0x1f19 => Some("E")
+        0x1f1a => Some("E")
+        0x1f1b => Some("E")
+        0x1f1c => Some("E")
+        0x1f1d => Some("E")
+        0x1f20 => Some("e")
+        0x1f21 => Some("e")
+        0x1f22 => Some("e")
+        0x1f23 => Some("e")
+        0x1f24 => Some("e")
+        0x1f25 => Some("e")
+        0x1f26 => Some("e")
+        0x1f27 => Some("e")
+        0x1f28 => Some("E")
+        0x1f29 => Some("E")
+        0x1f2a => Some("E")
+        0x1f2b => Some("E")
+        0x1f2c => Some("E")
+        0x1f2d => Some("E")
+        0x1f2e => Some("E")
+        0x1f2f => Some("E")
+        0x1f30 => Some("i")
+        0x1f31 => Some("i")
+        0x1f32 => Some("i")
+        0x1f33 => Some("i")
+        0x1f34 => Some("i")
+        0x1f35 => Some("i")
+        0x1f36 => Some("i")
+        0x1f37 => Some("i")
+        0x1f38 => Some("I")
+        0x1f39 => Some("I")
+        0x1f3a => Some("I")
+        0x1f3b => Some("I")
+        0x1f3c => Some("I")
+        0x1f3d => Some("I")
+        0x1f3e => Some("I")
+        0x1f3f => Some("I")
+        0x1f40 => Some("o")
+        0x1f41 => Some("o")
+        0x1f42 => Some("o")
+        0x1f43 => Some("o")
+        0x1f44 => Some("o")
+        0x1f45 => Some("o")
+        0x1f48 => Some("O")
+        0x1f49 => Some("O")
+        0x1f4a => Some("O")
+        0x1f4b => Some("O")
+        0x1f4c => Some("O")
+        0x1f4d => Some("O")
+        0x1f50 => Some("u")
+        0x1f51 => Some("u")
+        0x1f52 => Some("u")
+        0x1f53 => Some("u")
+        0x1f54 => Some("u")
+        0x1f55 => Some("u")
+        0x1f56 => Some("u")
+        0x1f57 => Some("u")
+        0x1f59 => Some("U")
+        0x1f5b => Some("U")
+        0x1f5d => Some("U")
+        0x1f5f => Some("U")
+        0x1f60 => Some("o")
+        0x1f61 => Some("o")
+        0x1f62 => Some("o")
+        0x1f63 => Some("o")
+        0x1f64 => Some("o")
+        0x1f65 => Some("o")
+        0x1f66 => Some("o")
+        0x1f67 => Some("o")
+        0x1f68 => Some("O")
+        0x1f69 => Some("O")
+        0x1f6a => Some("O")
+        0x1f6b => Some("O")
+        0x1f6c => Some("O")
+        0x1f6d => Some("O")
+        0x1f6e => Some("O")
+        0x1f6f => Some("O")
+        0x1f70 => Some("a")
+        0x1f71 => Some("a")
+        0x1f72 => Some("e")
+        0x1f73 => Some("e")
+        0x1f74 => Some("e")
+        0x1f75 => Some("e")
+        0x1f76 => Some("i")
+        0x1f77 => Some("i")
+        0x1f78 => Some("o")
+        0x1f79 => Some("o")
+        0x1f7a => Some("u")
+        0x1f7b => Some("u")
+        0x1f7c => Some("o")
+        0x1f7d => Some("o")
+        0x1f80 => Some("a")
+        0x1f81 => Some("a")
+        0x1f82 => Some("a")
+        0x1f83 => Some("a")
+        0x1f84 => Some("a")
+        0x1f85 => Some("a")
+        0x1f86 => Some("a")
+        0x1f87 => Some("a")
+        0x1f88 => Some("A")
+        0x1f89 => Some("A")
+        0x1f8a => Some("A")
+        0x1f8b => Some("A")
+        0x1f8c => Some("A")
+        0x1f8d => Some("A")
+        0x1f8e => Some("A")
+        0x1f8f => Some("A")
+        0x1f90 => Some("e")
+        0x1f91 => Some("e")
+        0x1f92 => Some("e")
+        0x1f93 => Some("e")
+        0x1f94 => Some("e")
+        0x1f95 => Some("e")
+        0x1f96 => Some("e")
+        0x1f97 => Some("e")
+        0x1f98 => Some("E")
+        0x1f99 => Some("E")
+        0x1f9a => Some("E")
+        0x1f9b => Some("E")
+        0x1f9c => Some("E")
+        0x1f9d => Some("E")
+        0x1f9e => Some("E")
+        0x1f9f => Some("E")
+        0x1fa0 => Some("o")
+        0x1fa1 => Some("o")
+        0x1fa2 => Some("o")
+        0x1fa3 => Some("o")
+        0x1fa4 => Some("o")
+        0x1fa5 => Some("o")
+        0x1fa6 => Some("o")
+        0x1fa7 => Some("o")
+        0x1fa8 => Some("O")
+        0x1fa9 => Some("O")
+        0x1faa => Some("O")
+        0x1fab => Some("O")
+        0x1fac => Some("O")
+        0x1fad => Some("O")
+        0x1fae => Some("O")
+        0x1faf => Some("O")
+        0x1fb0 => Some("a")
+        0x1fb1 => Some("a")
+        0x1fb2 => Some("a")
+        0x1fb3 => Some("a")
+        0x1fb4 => Some("a")
+        0x1fb6 => Some("a")
+        0x1fb7 => Some("a")
+        0x1fb8 => Some("A")
+        0x1fb9 => Some("A")
+        0x1fba => Some("A")
+        0x1fbb => Some("A")
+        0x1fbc => Some("A")
+        0x1fbd => Some("'")
+        0x1fbe => Some("i")
+        0x1fbf => Some("'")
+        0x1fc0 => Some("~")
+        0x1fc1 => Some("\"~")
+        0x1fc2 => Some("e")
+        0x1fc3 => Some("e")
+        0x1fc4 => Some("e")
+        0x1fc6 => Some("e")
+        0x1fc7 => Some("e")
+        0x1fc8 => Some("E")
+        0x1fc9 => Some("E")
+        0x1fca => Some("E")
+        0x1fcb => Some("E")
+        0x1fcc => Some("E")
+        0x1fcd => Some("'`")
+        0x1fce => Some("''")
+        0x1fcf => Some("'~")
+        0x1fd0 => Some("i")
+        0x1fd1 => Some("i")
+        0x1fd2 => Some("i")
+        0x1fd3 => Some("i")
+        0x1fd6 => Some("i")
+        0x1fd7 => Some("i")
+        0x1fd8 => Some("I")
+        0x1fd9 => Some("I")
+        0x1fda => Some("I")
+        0x1fdb => Some("I")
+        0x1fdd => Some("`'")
+        0x1fde => Some("`'")
+        0x1fdf => Some("`~")
+        0x1fe0 => Some("u")
+        0x1fe1 => Some("u")
+        0x1fe2 => Some("u")
+        0x1fe3 => Some("u")
+        0x1fe4 => Some("R")
+        0x1fe5 => Some("R")
+        0x1fe6 => Some("u")
+        0x1fe7 => Some("u")
+        0x1fe8 => Some("U")
+        0x1fe9 => Some("U")
+        0x1fea => Some("U")
+        0x1feb => Some("U")
+        0x1fec => Some("R")
+        0x1fed => Some("\"`")
+        0x1fee => Some("\"'")
+        0x1fef => Some("`")
+        0x1ff2 => Some("o")
+        0x1ff3 => Some("o")
+        0x1ff4 => Some("o")
+        0x1ff6 => Some("o")
+        0x1ff7 => Some("o")
+        0x1ff8 => Some("O")
+        0x1ff9 => Some("O")
+        0x1ffa => Some("O")
+        0x1ffb => Some("O")
+        0x1ffc => Some("O")
+        0x1ffd => Some("'")
+        0x1ffe => Some("`")
+        0x2000 => Some(" ")
+        0x2001 => Some(" ")
+        0x2002 => Some(" ")
+        0x2003 => Some(" ")
+        0x2004 => Some(" ")
+        0x2005 => Some(" ")
+        0x2006 => Some(" ")
+        0x2007 => Some(" ")
+        0x2008 => Some(" ")
+        0x2009 => Some(" ")
+        0x200a => Some(" ")
+        0x200b => Some(" ")
+        0x200c => Some("")
+        0x200d => Some("")
+        0x200e => Some("")
+        0x200f => Some("")
+        0x2010 => Some("-")
+        0x2011 => Some("-")
+        0x2012 => Some("-")
+        0x2013 => Some("-")
+        0x2014 => Some("--")
+        0x2015 => Some("--")
+        0x2016 => Some("||")
+        0x2017 => Some("_")
+        0x2018 => Some("'")
+        0x2019 => Some("'")
+        0x201a => Some(",")
+        0x201b => Some("'")
+        0x201c => Some("\"")
+        0x201d => Some("\"")
+        0x201e => Some(",,")
+        0x201f => Some("\"")
+        0x2020 => Some("+")
+        0x2021 => Some("++")
+        0x2022 => Some("*")
+        0x2023 => Some("*>")
+        0x2024 => Some(".")
+        0x2025 => Some("..")
+        0x2026 => Some("...")
+        0x2027 => Some(".")
+        0x2028 => Some(" ")
+        0x2029 => Some("  ")
+        0x202a => Some("")
+        0x202b => Some("")
+        0x202c => Some("")
+        0x202d => Some("")
+        0x202e => Some("")
+        0x202f => Some(" ")
+        0x2030 => Some("%0")
+        0x2031 => Some("%00")
+        0x2032 => Some("'")
+        0x2033 => Some("''")
+        0x2034 => Some("'''")
+        0x2035 => Some("`")
+        0x2036 => Some("``")
+        0x2037 => Some("```")
+        0x2038 => Some("^")
+        0x2039 => Some("<")
+        0x203a => Some(">")
+        0x203b => Some("*")
+        0x203c => Some("!!")
+        0x203d => Some("!?")
+        0x203e => Some("-")
+        0x203f => Some("_")
+        0x2040 => Some("-")
+        0x2041 => Some("^")
+        0x2042 => Some("***")
+        0x2043 => Some("--")
+        0x2044 => Some("/")
+        0x2045 => Some("-[")
+        0x2046 => Some("]-")
+        0x2047 => Some("??")
+        0x2048 => Some("?!")
+        0x2049 => Some("!?")
+        0x204a => Some("7")
+        0x204b => Some("PP")
+        0x204c => Some("(]")
+        0x204d => Some("[)")
+        0x204e => Some("*")
+        0x204f => Some(";")
+        0x2050 => Some("_")
+        0x2051 => Some("**")
+        0x2052 => Some("./.")
+        0x2053 => Some("~")
+        0x2054 => Some("_")
+        0x2055 => Some("*")
+        0x2056 => Some("_")
+        0x2057 => Some("''''")
+        0x2058 => Some("_")
+        0x2059 => Some("*")
+        0x205a => Some("_")
+        0x205b => Some("_")
+        0x205c => Some("+")
+        0x205d => Some("_")
+        0x205e => Some("_")
+        0x205f => Some(" ")
+        0x2060 => Some("")
+        0x2061 => Some("")
+        0x2062 => Some("")
+        0x2063 => Some("")
+        0x2064 => Some("")
+        0x2066 => Some("")
+        0x2067 => Some("")
+        0x2068 => Some("")
+        0x2069 => Some("")
+        0x206a => Some("")
+        0x206b => Some("")
+        0x206c => Some("")
+        0x206d => Some("")
+        0x206e => Some("")
+        0x206f => Some("")
+        0x20a0 => Some("ECU")
+        0x20a1 => Some("CL")
+        0x20a2 => Some("Cr")
+        0x20a3 => Some("FF")
+        0x20a4 => Some("L")
+        0x20a5 => Some("mil")
+        0x20a6 => Some("N")
+        0x20a7 => Some("Pts")
+        0x20a8 => Some("Rs")
+        0x20a9 => Some("W")
+        0x20aa => Some("NS")
+        0x20ab => Some("D")
+        0x20ac => Some("EUR")
+        0x20ad => Some("K")
+        0x20ae => Some("T")
+        0x20af => Some("Dr")
+        0x20b0 => Some("Pf")
+        0x20b1 => Some("P")
+        0x20b2 => Some("G")
+        0x20b3 => Some("A")
+        0x20b4 => Some("HRN")
+        0x20b5 => Some("C")
+        0x20b6 => Some("lt")
+        0x20b7 => Some("Sm")
+        0x20b8 => Some("T")
+        0x20b9 => Some("Rs")
+        0x20ba => Some("TL")
+        0x20bb => Some("M")
+        0x20bc => Some("Manat")
+        0x20bd => Some("Rb")
+        0x20be => Some("Lari")
+        0x20bf => Some("BTC")
+        0x20c0 => Some("Som")
+        0x2100 => Some("")
+        0x2101 => Some("")
+        0x2102 => Some("")
+        0x2103 => Some("")
+        0x2104 => Some("")
+        0x2105 => Some("")
+        0x2106 => Some("")
+        0x2107 => Some("")
+        0x2108 => Some("")
+        0x2109 => Some("")
+        0x210a => Some("")
+        0x210b => Some("")
+        0x210c => Some("")
+        0x210d => Some("")
+        0x210e => Some("")
+        0x210f => Some("")
+        0x2110 => Some("")
+        0x2111 => Some("")
+        0x2112 => Some("")
+        0x2113 => Some("")
+        0x2114 => Some("")
+        0x2115 => Some("")
+        0x2116 => Some("No")
+        0x2117 => Some("")
+        0x2118 => Some("")
+        0x2119 => Some("")
+        0x211a => Some("")
+        0x211b => Some("")
+        0x211c => Some("")
+        0x211d => Some("")
+        0x211e => Some("")
+        0x211f => Some("")
+        0x2120 => Some("")
+        0x2121 => Some("")
+        0x2122 => Some("tm")
+        0x2123 => Some("")
+        0x2124 => Some("")
+        0x2125 => Some("")
+        0x2126 => Some("")
+        0x2127 => Some("")
+        0x2128 => Some("")
+        0x2129 => Some("")
+        0x212a => Some("")
+        0x212b => Some("")
+        0x212c => Some("")
+        0x212d => Some("")
+        0x212e => Some("")
+        0x212f => Some("")
+        0x2130 => Some("")
+        0x2131 => Some("")
+        0x2132 => Some("")
+        0x2133 => Some("")
+        0x2134 => Some("")
+        0x2135 => Some("")
+        0x2136 => Some("")
+        0x2137 => Some("")
+        0x2138 => Some("")
+        0x2139 => Some("information source ")
+        0x213a => Some("")
+        0x213b => Some("")
+        0x213c => Some("")
+        0x213d => Some("")
+        0x213e => Some("")
+        0x213f => Some("")
+        0x2140 => Some("S")
+        0x2141 => Some("G")
+        0x2142 => Some("L")
+        0x2143 => Some("L")
+        0x2144 => Some("Y")
+        0x2145 => Some("D")
+        0x2146 => Some("d")
+        0x2147 => Some("e")
+        0x2148 => Some("i")
+        0x2149 => Some("j")
+        0x214a => Some("PL")
+        0x214b => Some("&")
+        0x214c => Some("P")
+        0x214d => Some("A/S")
+        0x214e => Some("f")
+        0x214f => Some("Sh")
+        _      => None

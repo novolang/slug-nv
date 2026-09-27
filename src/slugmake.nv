@@ -1,69 +1,64 @@
 // slugmake.nv — the slug, and what it cost.
 //
-// Every body here is a `todo()`; the signatures are the design.
+// The central value of this package is `SlugOutcome`, and its central
+// fact is that `slug` is always usable.  It is never the empty string,
+// `slugify` cannot fail, and every problem is a note beside a slug a
+// caller can already publish.
 //
-// **THE LOAD-BEARING INTERFACE OF THIS PACKAGE IS `SlugOutcome`, AND
-// THE LOAD-BEARING FACT IS THAT `slug` IS ALWAYS USABLE.** It is never
-// the empty string, `slugify` cannot fail, and every problem is a
-// note beside a slug a caller can already publish.
+// Every reference implementation answers `""` for an input it could
+// not slug, and each is used by programs that write the result into a
+// route table: `python-slugify` answers `""` for `🎉🎉🎉`.  The URL
+// that produces is the index page's, so the post overwrites the
+// listing, and nothing says so.  `empty_fallback` makes that
+// impossible and `SlugNoteEmptyInput` makes it visible.
 //
-// Why that is worth designing around rather than returning a `Str`:
-// every reference implementation answers `""` for an input it could
-// not slug, and every one of them is used by a program that writes the
-// result into a route table. `python-slugify("🎉🎉🎉")` is `""`;
-// `slugify("日本語")` under the same crate is `""`; a title in Greek
-// with no transliteration table is `""`. The URL that produces is the
-// index page's, so the post overwrites the listing — and nothing
-// anywhere says so. `empty_fallback` makes that impossible and
-// `SlugNoteEmptyInput` makes it visible.
-//
-// `SlugNoteDropped` IS THE NOTE NOBODY ELSE REPORTS, and it is the
-// argument for notes being a LIST rather than an enum. A title of
+// `SlugNoteDropped` reports what no reference reports.  A title of
 // thirty characters in a script the loaded table does not cover comes
-// out as the three ASCII characters it happened to contain. That is a
-// slug — it is not empty, it is unique, it routes — and it is useless,
-// and a site owner learns about it from a reader. The count is in the
-// note.
+// out as the three ASCII characters it happened to contain.  That slug
+// is not empty and it routes, and it is useless; the count of what was
+// dropped is in the note.  The notes are a list because several things
+// happen at once: a long Cyrillic title is transliterated and
+// truncated, and an enum could report one of the two.
 //
-// THE NOTES ARE A LIST BECAUSE SEVERAL THINGS HAPPEN AT ONCE. A long
-// title in Cyrillic that collides with an existing post is
-// transliterated, truncated AND suffixed, and an enum could report one
-// of the three.
-//
-// NOTHING HERE READS THE WORLD. Whether a word is reserved and whether
-// a slug is taken are both facts in a database, and they arrive as
-// named predicates the caller supplies. `slugroute` is where those
-// two live; this module is the string.
+// The pipeline walks the title one character at a time.  A letter or
+// digit is kept, a symbol with a word is expanded when the policy says
+// so, a character outside ASCII is transliterated through the table,
+// and anything else becomes a separator or is removed, as
+// `SlugPolicy.collapse_runs` says.  Then the case is forced, the ends
+// are trimmed, and the limit is applied.
 
 use udata
 use slugpolicy
 use slugtrans
+use ucase
+use uclass
+use ugrapheme
+use unorm
 
 // What happened on the way to a slug.
 pub enum SlugNote
     // Nothing survived: the slug is `SlugPolicy.empty_fallback`.
     SlugNoteEmptyInput
     // `count` characters had no entry in the loaded table and were
-    // dropped. See the module comment: this is the failure that looks
-    // like a success.
+    // dropped.  This is the failure that looks like a success.
     SlugNoteDropped(count: Int)
     // `count` characters were transliterated out of their own script.
-    // Not a problem — reported so a caller can tell a slug that is a
+    // Not a problem: reported so a caller can tell a slug that is a
     // romanisation from one that is the title.
     SlugNoteTransliterated(count: Int)
     // The slug was cut to fit `max_len`; `full` is what it would have
     // been.
     SlugNoteTruncated(full: Str)
-    // A symbol was expanded to a word — `&` to `and`. Carried because
-    // it is the substitution a caller most often wants to override for
-    // its own language.
+    // `count` symbols were expanded to words, such as `&` to `and`.
+    // Carried because it is the substitution a caller most often wants
+    // to override for its own language.
     SlugNoteExpanded(count: Int)
 
 // A slug, and what it cost.
 pub struct SlugOutcome
-    // ALWAYS USABLE. Never empty, always canonical under the policy
-    // that made it. A caller that does not care about the notes reads
-    // this field and stops.
+    // Always usable: never empty, and canonical under the policy that
+    // made it unless it is the fallback.  A caller that does not care
+    // about the notes reads this field and stops.
     slug: Str
     // Everything that happened, in the order the pipeline does it.
     // Empty for a title that slugged cleanly, which is the ordinary
@@ -72,7 +67,10 @@ pub struct SlugOutcome
 
 // Slug a title under a policy, using the compiled-in Latin table.
 //
-// The call a site generator makes. It cannot fail.
+// The call a site generator makes.  It cannot fail.  Under
+// `SlugModeUnicode` a letter in any script is kept, but only ASCII is
+// lowered and nothing is normalised; `slugify_unicode` is the call
+// with the tables for both.
 //
 // ```novo
 // use slugpolicy
@@ -82,33 +80,53 @@ pub struct SlugOutcome
 // println(o.slug)   // hello-world
 // ```
 pub fn slugify(title: Str, p: slugpolicy.SlugPolicy) -> SlugOutcome []
-    todo("slug-nv.slugmake.slugify")
+    make(title, p, slugtrans.latin_table(), words_of(p), None)
 
-// Slug with a table the caller loaded — the extended one, for a
+// Slug with a table the caller loaded, such as an extended one for a
 // corpus that is not European.
+//
+// ```novo
+// use slugpolicy
+// use slugmake
+// use slugtrans
+//
+// println(slugmake.slugify_with("Café", slugpolicy.url_policy(), slugtrans.latin_table()).slug)   // cafe
+// ```
 pub fn slugify_with(title: Str, p: slugpolicy.SlugPolicy, t: slugtrans.SlugTable) -> SlugOutcome []
-    todo("slug-nv.slugmake.slugify_with")
+    make(title, p, t, words_of(p), None)
 
 // Slug with the caller's own symbol substitutions, for a language
-// whose `&` is not `and`.
+// whose `&` is not `and`.  They apply only when the policy's
+// `expand_symbols` is on.
+//
+// ```novo
+// use slugpolicy
+// use slugmake
+// use slugtrans
+//
+// let de = slugtrans.word_substitutions_for("de")
+// println(slugmake.slugify_with_words("Katzen & Hunde", slugpolicy.url_policy(), slugtrans.latin_table(), de).slug)
+// ```
 pub fn slugify_with_words(title: Str, p: slugpolicy.SlugPolicy, t: slugtrans.SlugTable,
                           words: [(Int, Str)]) -> SlugOutcome []
-    todo("slug-nv.slugmake.slugify_with_words")
+    if p.expand_symbols
+        return make(title, p, t, words, None)
+    make(title, p, t, [], None)
 
 // Slug in `SlugModeUnicode`: letters in any script kept and normalised
 // to NFC, punctuation and whitespace collapsed to the separator.
 //
-// THE ONE CALL THAT TAKES `UniData`, and the signature is the
-// disclosure. NFC normalisation and case mapping outside ASCII ARE
-// that table — 245 KB of it — and a caller that never serves an
-// international path never constructs one. The ASCII path above needs
-// nothing from unicode-nv at all.
+// The one call that takes `UniData`, and the signature is the
+// disclosure: NFC normalisation and case mapping outside ASCII are that
+// table, 245 KB of it, and a caller that never serves an international
+// path never constructs one.  A letter, a digit or a combining mark in
+// any script is kept.  The policy's mode is read as
+// `SlugModeUnicode` whatever it says.
 //
-// The output is a valid path SEGMENT. It is not a valid hostname
+// The output is a valid path segment.  It is not a valid hostname
 // label: punycode-nv's `punyidna.host_to_ascii` is the wire form for
-// that, and this package does not encode it, because a host label has
-// a different grammar and a 63-byte limit this package's `max_len`
-// does not model.
+// that, because a host label has a different grammar and a 63-byte
+// limit that `max_len` does not model.
 //
 // ```novo
 // use slugpolicy
@@ -120,53 +138,376 @@ pub fn slugify_with_words(title: Str, p: slugpolicy.SlugPolicy, t: slugtrans.Slu
 // println(o.slug)
 // ```
 pub fn slugify_unicode(title: Str, p: slugpolicy.SlugPolicy, d: udata.UniData) -> SlugOutcome []
-    todo("slug-nv.slugmake.slugify_unicode")
+    let policy = if unicode_mode(p)
+        p
+    else
+        as_unicode(p)
+    make(unorm.normalize(d, title, FormNfc), policy, slugtrans.latin_table(), words_of(p), Some(d))
 
-// Slug, appended to the caller's buffer. The notes come back beside
-// it because they are not bytes.
-pub fn slugify_into(out: [u8], title: Str, p: slugpolicy.SlugPolicy,
+// Slug, appended to the caller's buffer, which is written in place and
+// answered.  The notes come back beside it because they are not bytes.
+pub fn slugify_into(var out: [u8], title: Str, p: slugpolicy.SlugPolicy,
                     t: slugtrans.SlugTable) -> ([u8], [SlugNote]) []
-    todo("slug-nv.slugmake.slugify_into")
+    let o = slugify_with(title, p, t)
+    for b in bytes.to_byte_list(bytes.from_str(o.slug))
+        list.push(out, b)
+    (out, o.notes[:])
 
-// Whether an outcome carries no notes — the ordinary case, and the
+// Whether a string is already exactly what this policy would produce
+// for it: the check a route table makes on a slug a person typed in,
+// and the one a test makes to assert a stored slug has not drifted
+// from the policy that made it.
+//
+// ```novo
+// use slugpolicy
+// use slugmake
+//
+// println("${slugmake.is_canonical(slugpolicy.github_policy(), "getting-started")}")   // true
+// ```
+pub fn is_canonical(p: slugpolicy.SlugPolicy, s: Str) -> Bool []
+    slugify(s, p).slug == s
+
+// Whether an outcome carries no notes: the ordinary case, and the
 // check a caller makes before deciding whether to look at any of them.
+//
+// ```novo
+// use slugpolicy
+// use slugmake
+//
+// println("${slugmake.is_clean(slugmake.slugify("Hello", slugpolicy.url_policy()))}")   // true
+// ```
 pub fn is_clean(o: SlugOutcome) -> Bool []
-    todo("slug-nv.slugmake.is_clean")
+    list.len(o.notes) == 0
 
 // Whether an outcome carries a note of a kind that should be reported
 // to a person: `SlugNoteEmptyInput` and `SlugNoteDropped`.
 //
 // A named call rather than a caller's own match, because the two that
 // matter are exactly the two that look like success from the slug
-// alone, and a caller deciding for itself gets to forget one.
+// alone.
+//
+// ```novo
+// use slugpolicy
+// use slugmake
+//
+// println("${slugmake.needs_attention(slugmake.slugify("🎉", slugpolicy.url_policy()))}")   // true
+// ```
 pub fn needs_attention(o: SlugOutcome) -> Bool []
-    todo("slug-nv.slugmake.needs_attention")
+    list.any(o.notes, n => attention(n))
 
 // How many characters were dropped, reading the note if there is one
 // and answering zero if there is not.
+//
+// ```novo
+// use slugpolicy
+// use slugmake
+//
+// println("${slugmake.dropped_count(slugmake.slugify("日本 Novo", slugpolicy.url_policy()))}")   // 2
+// ```
 pub fn dropped_count(o: SlugOutcome) -> Int []
-    todo("slug-nv.slugmake.dropped_count")
+    list.fold(o.notes, (total, n) => total + dropped_in(n), 0)
 
 // The longest prefix of `slug` that fits `max` clusters under
 // `truncate`.
 //
-// Published because a caller that built a slug itself — from a
-// database column, from a person's input — still wants the length rule
-// and should not reimplement the word-boundary search.
+// Published because a caller that built a slug itself, from a database
+// column or a person's input, still wants the length rule.  Under
+// `SlugTruncateWord` the cut moves back to the last separator inside
+// the limit, and the separator goes too; a single word longer than the
+// limit is cut at the limit.  Under `SlugTruncateCluster` the cut is at
+// the limit, whatever is there.
+//
+// ```novo
+// use slugpolicy
+// use slugmake
+//
+// println(slugmake.truncate_at("alpha-beta-gamma", 11, SlugTruncateWord, "-"))   // alpha-beta
+// ```
 pub fn truncate_at(slug: Str, max: Int, how: slugpolicy.SlugTruncate, separator: Str) -> Str []
-    todo("slug-nv.slugmake.truncate_at")
+    if max <= 0 or clusters(slug) <= max
+        return slug
+    let cut = cut_at(slug, max)
+    let head = str.slice(slug, 0, cut)
+    match how
+        SlugTruncateCluster => head
+        SlugTruncateWord    => word_cut(slug, head, cut, separator)
 
-// The separator runs collapsed and the ends trimmed, under a policy —
-// the last step of the pipeline, on its own, for a caller stitching
-// two slugs together.
+// The separator runs collapsed and the ends trimmed, each when the
+// policy asks for it: the last step of the pipeline, on its own, for a
+// caller stitching two slugs together.
+//
+// ```novo
+// use slugpolicy
+// use slugmake
+//
+// println(slugmake.tidy("--a---b--", slugpolicy.url_policy()))   // a-b
+// ```
 pub fn tidy(s: Str, p: slugpolicy.SlugPolicy) -> Str []
-    todo("slug-nv.slugmake.tidy")
+    let sep = p.separator
+    if sep == ""
+        return s
+    var out = s
+    if p.collapse_runs
+        let doubled = sep + sep
+        for _ in 0..str.len(s)
+            if not str.contains(out, doubled)
+                break
+            out = str.replace_all(out, doubled, sep)
+    if p.trim_separators
+        out = trim_sep(out, sep)
+    out
 
 // Two slugs joined with the policy's separator, tidied.
 //
-// The call a hierarchical route makes — a section slug and a post slug
-// into one path segment — and it is here rather than in a caller
-// because joining with `+` produces a double separator whenever either
-// side already ends or begins with one.
+// The call a hierarchical route makes, a section slug and a post slug
+// into one path segment.  Joining with `+` would leave a double
+// separator whenever either side already ends or begins with one.
+//
+// ```novo
+// use slugpolicy
+// use slugmake
+//
+// println(slugmake.join("guide-", "-install", slugpolicy.url_policy()))   // guide-install
+// ```
 pub fn join(a: Str, b: Str, p: slugpolicy.SlugPolicy) -> Str []
-    todo("slug-nv.slugmake.join")
+    tidy(a + p.separator + b, p)
+
+// The symbol words a policy applies: English when it expands, none
+// when it does not.
+fn words_of(p: slugpolicy.SlugPolicy) -> [(Int, Str)]
+    if p.expand_symbols
+        return slugtrans.word_substitutions()
+    []
+
+fn unicode_mode(p: slugpolicy.SlugPolicy) -> Bool
+    match p.mode
+        SlugModeUnicode => true
+        SlugModeAscii   => false
+
+// The policy with its mode set to `SlugModeUnicode`.
+fn as_unicode(p: slugpolicy.SlugPolicy) -> slugpolicy.SlugPolicy
+    SlugPolicy { separator: p.separator,
+        case: p.case,
+        mode: SlugModeUnicode,
+        max_len: p.max_len,
+        truncate: p.truncate,
+        empty_fallback: p.empty_fallback,
+        collapse_runs: p.collapse_runs,
+        trim_separators: p.trim_separators,
+        expand_symbols: p.expand_symbols }
+
+// What the walk over a title has built so far.
+struct Walk
+    // The pieces of the slug, in order.  A separator is its own piece.
+    var pieces: [Str]
+    // Whether a separator is owed before the next letter.  Runs
+    // collapse into this one flag.
+    var owed: Bool
+    var transliterated: Int
+    var dropped: Int
+    var expanded: Int
+
+// The whole pipeline.
+fn make(title: Str, p: slugpolicy.SlugPolicy, t: slugtrans.SlugTable, words: [(Int, Str)],
+        d: ?udata.UniData) -> SlugOutcome
+    var w = Walk { pieces: [], owed: false, transliterated: 0, dropped: 0, expanded: 0 }
+    let text = str.trim(title)
+    let keep_letters = unicode_mode(p)
+    var i = 0
+    let n = str.len(text)
+    for _ in 0..n
+        if i >= n
+            break
+        let ch = slugtrans.char_at(text, i)
+        let width = slugtrans.char_width(text, i)
+        if let Some(word) = word_for(words, ch)
+            separate(w, p)
+            feed_ascii(w, p, word)
+            separate(w, p)
+            w.expanded = w.expanded + 1
+        else if ch < 0x80
+            feed_byte(w, p, ch)
+        else if keep_letters and (uclass.is_letter(ch) or uclass.is_digit(ch) or uclass.is_mark(ch))
+            keep(w, p, str.slice(text, i, i + width))
+        else if keep_letters
+            other(w, p, uclass.is_whitespace(ch))
+        else
+            match slugtrans.char_ascii_of(t, ch)
+                Some(ascii) =>
+                    if ascii != ""
+                        w.transliterated = w.transliterated + 1
+                    feed_ascii(w, p, ascii)
+                None        =>
+                    w.dropped = w.dropped + 1
+                    other(w, p, false)
+        i = i + width
+    pay(w, p)
+    let joined = str.join(w.pieces, "")
+    let cased = force_case(joined, p, d)
+    let trimmed = if p.trim_separators
+        trim_sep(cased, p.separator)
+    else
+        cased
+    var notes: [SlugNote] = []
+    if w.transliterated > 0
+        list.push(notes, SlugNoteTransliterated(w.transliterated))
+    if w.dropped > 0
+        list.push(notes, SlugNoteDropped(w.dropped))
+    if w.expanded > 0
+        list.push(notes, SlugNoteExpanded(w.expanded))
+    var slug = trimmed
+    if p.max_len > 0 and clusters(trimmed) > p.max_len
+        let cut = truncate_at(trimmed, p.max_len, p.truncate, p.separator)
+        slug = if p.trim_separators
+            trim_sep(cut, p.separator)
+        else
+            cut
+        list.push(notes, SlugNoteTruncated(trimmed))
+    if slug == ""
+        list.push(notes, SlugNoteEmptyInput)
+        return SlugOutcome { slug: p.empty_fallback, notes: notes }
+    SlugOutcome { slug: slug, notes: notes }
+
+// The word a symbol expands to, or `None`.
+fn word_for(words: [(Int, Str)], ch: Int) -> ?Str
+    for pair in words
+        let (symbol, word) = pair
+        if symbol == ch
+            return Some(word)
+    None
+
+// Feed an ASCII string through the pipeline one byte at a time.
+fn feed_ascii(var w: Walk, p: slugpolicy.SlugPolicy, text: Str)
+    for k in 0..str.len(text)
+        feed_byte(w, p, str.byte_at_or(text, k, 0))
+
+// One ASCII byte: a letter or digit is kept, the separator character
+// stands for a separator, so that a slug is its own slug, and anything
+// else goes through `other`, except that GitHub's rule keeps a hyphen
+// as a separator and an underscore as itself.
+fn feed_byte(var w: Walk, p: slugpolicy.SlugPolicy, b: Int)
+    if b >= 'a' and b <= 'z' or b >= 'A' and b <= 'Z' or b >= '0' and b <= '9'
+        keep(w, p, str.from_byte(b))
+    else if str.len(p.separator) == 1 and b == str.byte_at_or(p.separator, 0, 0)
+        separate(w, p)
+    else if not p.collapse_runs and b == '_'
+        keep(w, p, "_")
+    else if not p.collapse_runs and b == '-'
+        list.push(w.pieces, p.separator)
+    else
+        other(w, p, b == ' ' or b == '\t' or b == '\n' or b == '\r')
+
+// A character that is neither kept nor transliterated.  With runs
+// collapsed it owes a separator; under GitHub's rule a space is one
+// separator and anything else is removed.
+fn other(var w: Walk, p: slugpolicy.SlugPolicy, is_space: Bool)
+    if p.collapse_runs
+        w.owed = true
+    else if is_space
+        list.push(w.pieces, p.separator)
+
+// A separator owed, as around an expanded word.
+fn separate(var w: Walk, p: slugpolicy.SlugPolicy)
+    if p.collapse_runs
+        w.owed = true
+    else
+        list.push(w.pieces, p.separator)
+
+// Keep a letter, paying any separator owed first.
+fn keep(var w: Walk, p: slugpolicy.SlugPolicy, text: Str)
+    pay(w, p)
+    list.push(w.pieces, text)
+
+// Emit the separator owed, if one is.
+fn pay(var w: Walk, p: slugpolicy.SlugPolicy)
+    if w.owed
+        list.push(w.pieces, p.separator)
+    w.owed = false
+
+// The slug in the policy's case.
+fn force_case(s: Str, p: slugpolicy.SlugPolicy, d: ?udata.UniData) -> Str
+    match p.case
+        SlugCaseKeep  => s
+        SlugCaseLower =>
+            match d
+                Some(data) => ucase.to_lower(data, s, "")
+                None       => str.lower(s)
+        SlugCaseUpper =>
+            match d
+                Some(data) => ucase.to_upper(data, s, "")
+                None       => str.upper(s)
+
+// The string without the separator at either end, however many times
+// it repeats there.
+fn trim_sep(s: Str, sep: Str) -> Str
+    if sep == ""
+        return s
+    var out = s
+    let k = str.len(sep)
+    for _ in 0..str.len(s)
+        if not str.starts_with(out, sep)
+            break
+        out = str.slice(out, k, str.len(out))
+    for _ in 0..str.len(s)
+        if not str.ends_with(out, sep)
+            break
+        out = str.slice(out, 0, str.len(out) - k)
+    out
+
+// The length in grapheme clusters, which for ASCII is the length in
+// bytes.
+fn clusters(s: Str) -> Int
+    if is_ascii(s)
+        return str.len(s)
+    ugrapheme.count(s)
+
+// The byte offset after the first `max` clusters.
+fn cut_at(s: Str, max: Int) -> Int
+    if is_ascii(s)
+        return max
+    ugrapheme.truncate_clusters(s, max)
+
+fn is_ascii(s: Str) -> Bool
+    list.all(list.range(0, str.len(s)), i => str.byte_at_or(s, i, 0) < 0x80)
+
+// Cut at the last separator inside `head`, unless the cut already
+// falls just before a separator.
+fn word_cut(slug: Str, head: Str, cut: Int, sep: Str) -> Str
+    if sep == "" or str.starts_with(str.slice(slug, cut, str.len(slug)), sep)
+        return trim_end(head, sep)
+    match last_index(head, sep)
+        Some(at) => str.slice(head, 0, at)
+        None     => head
+
+// The string without the separator at its end.
+fn trim_end(s: Str, sep: Str) -> Str
+    if sep != "" and str.ends_with(s, sep)
+        return str.slice(s, 0, str.len(s) - str.len(sep))
+    s
+
+// The byte offset of the last occurrence of `sub` in `s` after its
+// first byte, or `None`.
+fn last_index(s: Str, sub: Str) -> ?Int
+    var found: ?Int = None
+    var from = 1
+    for _ in 0..str.len(s)
+        match str.index_from(s, sub, from)
+            None     =>
+                break
+            Some(at) =>
+                found = Some(at)
+                from = at + 1
+    found
+
+// Whether a note is one a person should be told about.
+fn attention(n: SlugNote) -> Bool
+    match n
+        SlugNoteEmptyInput => true
+        SlugNoteDropped(_) => true
+        _                  => false
+
+// The dropped count a note carries, or zero.
+fn dropped_in(n: SlugNote) -> Int
+    match n
+        SlugNoteDropped(c) => c
+        _                  => 0
