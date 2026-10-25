@@ -199,7 +199,7 @@ fn test_the_table_blob_round_trips_and_refuses_what_it_is_not() [io]
         name: "kana",
         entries: [(0x3042, "a"), (0x3044, "i"), (0x65E5, "ri")] }
     var out: [u8] = []
-    let blob = slugtrans.pack_bytes(out, kana)
+    let blob = slugtrans.pack_bytes(var out, kana)
     match slugtrans.table_from_bytes(blob)
         None    => test.fail("what pack_bytes wrote reads back")
         Some(t) =>
@@ -224,7 +224,7 @@ fn test_the_table_blob_round_trips_and_refuses_what_it_is_not() [io]
         SlugScriptNone],
     name: "all", entries: [] }
     var buffer: [u8] = []
-    match slugtrans.table_from_bytes(slugtrans.pack_bytes(buffer, all))
+    match slugtrans.table_from_bytes(slugtrans.pack_bytes(var buffer, all))
         None    => test.fail("every script has a code")
         Some(t) => test.assert_eq(list.len(t.scripts), 12)
     test.case("a truncated blob, a bad script code, entries out of order, and trailing bytes")
@@ -238,7 +238,7 @@ fn test_the_table_blob_round_trips_and_refuses_what_it_is_not() [io]
     test.assert(slugtrans.table_from_bytes(bad_script) == None)
     let unordered = SlugTable { scripts: [], name: "x", entries: [(0x3044, "i"), (0x3042, "a")] }
     var o2: [u8] = []
-    test.assert(slugtrans.table_from_bytes(slugtrans.pack_bytes(o2, unordered)) == None)
+    test.assert(slugtrans.table_from_bytes(slugtrans.pack_bytes(var o2, unordered)) == None)
     let short_name: [u8] = ['S' as u8,
         'L' as u8,
         'U' as u8,

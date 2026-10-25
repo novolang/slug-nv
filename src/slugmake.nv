@@ -321,27 +321,27 @@ fn make(title: Str, p: slugpolicy.SlugPolicy, t: slugtrans.SlugTable, words: [(I
         let ch = slugtrans.char_at(text, i)
         let width = slugtrans.char_width(text, i)
         if let Some(word) = word_for(words, ch)
-            separate(w, p)
-            feed_ascii(w, p, word)
-            separate(w, p)
+            separate(var w, p)
+            feed_ascii(var w, p, word)
+            separate(var w, p)
             w.expanded = w.expanded + 1
         else if ch < 0x80
-            feed_byte(w, p, ch)
+            feed_byte(var w, p, ch)
         else if keep_letters and (uclass.is_letter(ch) or uclass.is_digit(ch) or uclass.is_mark(ch))
-            keep(w, p, str.slice(text, i, i + width))
+            keep(var w, p, str.slice(text, i, i + width))
         else if keep_letters
-            other(w, p, uclass.is_whitespace(ch))
+            other(var w, p, uclass.is_whitespace(ch))
         else
             match slugtrans.char_ascii_of(t, ch)
                 Some(ascii) =>
                     if ascii != ""
                         w.transliterated = w.transliterated + 1
-                    feed_ascii(w, p, ascii)
+                    feed_ascii(var w, p, ascii)
                 None        =>
                     w.dropped = w.dropped + 1
-                    other(w, p, false)
+                    other(var w, p, false)
         i = i + width
-    pay(w, p)
+    pay(var w, p)
     let joined = str.join(w.pieces, "")
     let cased = force_case(joined, p, d)
     let trimmed = if p.trim_separators
@@ -379,7 +379,7 @@ fn word_for(words: [(Int, Str)], ch: Int) -> ?Str
 // Feed an ASCII string through the pipeline one byte at a time.
 fn feed_ascii(var w: Walk, p: slugpolicy.SlugPolicy, text: Str)
     for k in 0..str.len(text)
-        feed_byte(w, p, str.byte_at_or(text, k, 0))
+        feed_byte(var w, p, str.byte_at_or(text, k, 0))
 
 // One ASCII byte: a letter or digit is kept, the separator character
 // stands for a separator, so that a slug is its own slug, and anything
@@ -387,15 +387,15 @@ fn feed_ascii(var w: Walk, p: slugpolicy.SlugPolicy, text: Str)
 // as a separator and an underscore as itself.
 fn feed_byte(var w: Walk, p: slugpolicy.SlugPolicy, b: Int)
     if b >= 'a' and b <= 'z' or b >= 'A' and b <= 'Z' or b >= '0' and b <= '9'
-        keep(w, p, str.from_byte(b))
+        keep(var w, p, str.from_byte(b))
     else if str.len(p.separator) == 1 and b == str.byte_at_or(p.separator, 0, 0)
-        separate(w, p)
+        separate(var w, p)
     else if not p.collapse_runs and b == '_'
-        keep(w, p, "_")
+        keep(var w, p, "_")
     else if not p.collapse_runs and b == '-'
         list.push(w.pieces, p.separator)
     else
-        other(w, p, b == ' ' or b == '\t' or b == '\n' or b == '\r')
+        other(var w, p, b == ' ' or b == '\t' or b == '\n' or b == '\r')
 
 // A character that is neither kept nor transliterated.  With runs
 // collapsed it owes a separator; under GitHub's rule a space is one
@@ -415,7 +415,7 @@ fn separate(var w: Walk, p: slugpolicy.SlugPolicy)
 
 // Keep a letter, paying any separator owed first.
 fn keep(var w: Walk, p: slugpolicy.SlugPolicy, text: Str)
-    pay(w, p)
+    pay(var w, p)
     list.push(w.pieces, text)
 
 // Emit the separator owed, if one is.

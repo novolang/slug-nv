@@ -156,17 +156,17 @@ pub fn pack_bytes(var out: [u8], t: SlugTable) -> [u8] []
     for b in MAGIC
         list.push(out, b as u8)
     let name = bytes.to_byte_list(bytes.from_str(t.name))
-    put_be(out, list.len(name), 2)
+    put_be(var out, list.len(name), 2)
     for b in name
         list.push(out, b)
-    put_be(out, list.len(t.scripts), 2)
+    put_be(var out, list.len(t.scripts), 2)
     for sc in t.scripts
         list.push(out, script_code(sc) as u8)
-    put_be(out, list.len(t.entries), 4)
+    put_be(var out, list.len(t.entries), 4)
     for e in t.entries
         let (ch, text) = e
         let tb = bytes.to_byte_list(bytes.from_str(text))
-        put_be(out, ch, 3)
+        put_be(var out, ch, 3)
         list.push(out, list.len(tb) as u8)
         for b in tb
             list.push(out, b)
@@ -247,7 +247,7 @@ pub fn char_ascii(t: SlugTable, ch: Int) -> Str []
 // search index normalising its terms, a sort key for a list of names.
 pub fn transliterate(t: SlugTable, text: Str) -> Str []
     var out: [u8] = []
-    bytes.byte_list_to_str(transliterate_into(out, t, text))
+    bytes.byte_list_to_str(transliterate_into(var out, t, text))
 
 // The same, appended to the caller's buffer, which is written in place
 // and answered.

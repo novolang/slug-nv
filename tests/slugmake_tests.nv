@@ -200,7 +200,7 @@ fn test_the_buffer_form_appends_and_hands_the_notes_back_beside_it() [io]
     var seed: [u8] = [47]
 
     test.case("what was in the buffer is still at the front")
-    let out = slugmake.slugify_into(seed, "Hello", url(), slugtrans.latin_table())
+    let out = slugmake.slugify_into(var seed, "Hello", url(), slugtrans.latin_table())
     test.assert(out.0[0] == 47)
     test.assert(list.len(out.0) > 1)
 
